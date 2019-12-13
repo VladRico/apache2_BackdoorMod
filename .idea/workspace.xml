@@ -12,6 +12,8 @@
     <list default="true" id="d343f04a-4464-41cd-88fb-f0167e51aab5" name="Default Changelist" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/mod_backdoor.c" beforeDir="false" afterPath="$PROJECT_DIR$/mod_backdoor.c" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/my.py" beforeDir="false" afterPath="$PROJECT_DIR$/my.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/temp.c" beforeDir="false" afterPath="$PROJECT_DIR$/temp.c" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -58,7 +60,7 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1576139273389</updated>
-      <workItem from="1576139275765" duration="21518000" />
+      <workItem from="1576139275765" duration="47810000" />
     </task>
     <servers />
   </component>
@@ -66,9 +68,9 @@
     <option name="version" value="1" />
   </component>
   <component name="WindowStateProjectService">
-    <state x="1990" y="255" key="run.anything.popup" timestamp="1576160864178">
+    <state x="1990" y="255" key="run.anything.popup" timestamp="1576255963910">
       <screen x="1366" y="0" width="1920" height="1080" />
     </state>
-    <state x="1990" y="255" key="run.anything.popup/1366.0.1920.1080/0.156.1366.768@1366.0.1920.1080" timestamp="1576160864178" />
+    <state x="1990" y="255" key="run.anything.popup/1366.0.1920.1080/0.156.1366.768@1366.0.1920.1080" timestamp="1576255963910" />
   </component>
 </project>
