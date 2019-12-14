@@ -11,9 +11,9 @@
   <component name="ChangeListManager">
     <list default="true" id="d343f04a-4464-41cd-88fb-f0167e51aab5" name="Default Changelist" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/mod_backdoor.c" beforeDir="false" afterPath="$PROJECT_DIR$/mod_backdoor.c" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/my.py" beforeDir="false" afterPath="$PROJECT_DIR$/my.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/temp.c" beforeDir="false" afterPath="$PROJECT_DIR$/temp.c" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -61,6 +61,7 @@
       <option name="presentableId" value="Default" />
       <updated>1576139273389</updated>
       <workItem from="1576139275765" duration="47810000" />
+      <workItem from="1576331535166" duration="14935000" />
     </task>
     <servers />
   </component>
@@ -68,6 +69,10 @@
     <option name="version" value="1" />
   </component>
   <component name="WindowStateProjectService">
+    <state x="2566" y="372" key="com.intellij.ide.util.TipDialog" timestamp="1576331535452">
+      <screen x="1920" y="0" width="1920" height="1080" />
+    </state>
+    <state x="2566" y="372" key="com.intellij.ide.util.TipDialog/1920.0.1920.1080/0.26.1920.1054@1920.0.1920.1080" timestamp="1576331535452" />
     <state x="1990" y="255" key="run.anything.popup" timestamp="1576255963910">
       <screen x="1366" y="0" width="1920" height="1080" />
     </state>

