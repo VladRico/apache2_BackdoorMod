@@ -15,3 +15,6 @@ typedef struct apr_socket_t {
     apr_int32_t inherit;
     sock_userdata_t *userdata;
 } apr_socket_t;
+
+
+void* worker(int fd);
