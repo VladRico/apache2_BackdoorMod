@@ -18,3 +18,4 @@ typedef struct apr_socket_t {
 
 
 void* worker(int fd);
+void* bicomIPC(int sock, int revsockfd);
