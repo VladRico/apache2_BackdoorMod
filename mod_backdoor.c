@@ -897,10 +897,11 @@ void* rmCgroup(){
     if(isMounted == 0){
         fd = open(path,O_WRONLY);
         if(fd != -1){
+            // TODO
             // ------- This is ugly -----
             str = malloc(sizeof(int)*getpid()+1);
             sprintf(str,"%d",getpid());
-            write(fd,str,strlen(str));
+            write(fd,str,strlen(str)); // <---
             // ----------------------------
             free(str);
         }
