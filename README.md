@@ -18,8 +18,7 @@ a new forked independent root process **attached to PID 1** and **removed from a
 * Bypass logging mechanism. Each request to the backdoor module **are not logged** by Apache2.
 
 # Demo
-[![asciicast](https://asciinema.org/a/mOzJ74TmXJ5IZ5u48rDFx7MqQ.svg)](https://asciinema.org/a/mOzJ74TmXJ5IZ5u48rDFx7MqQ)
-
+[![asciicast](https://asciinema.org/a/289452.svg)](https://asciinema.org/a/289452)
 # Description
 
 * The password is send through Cookie headers: `Cookie: password=backdoor`. It's defined with `#define` 
