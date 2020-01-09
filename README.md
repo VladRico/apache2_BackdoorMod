@@ -16,6 +16,7 @@ a new forked independent root process **attached to PID 1** and **removed from a
 * Password Protection through cookie headers
 * Ping module to know if its still active
 * Bypass logging mechanism. Each request to the backdoor module **are not logged** by Apache2.
+* Work on systemd systems, but should also work with init-like systems
 
 # Demo
 [![asciicast](https://asciinema.org/a/289452.svg)](https://asciinema.org/a/289452)
@@ -31,6 +32,8 @@ in the beginning of mod_backdoor.c, so you could easily edit it.<br/>
  It means it's possible to **restart/stop apache2.service from a spawned shell** (not true for 
  TTY shells because an apache2 process is needed to do the bidirectional communication between socket
  and pty). It also improves stealth, shells are no longer related to apache2.service. <br/>
+ * IPC socket is stored in the private /tmp folder provided by systemd service. 
+ On non-systemd systems, I'm currently working on how to implement a stealth behavior for the socket.
 
 ### Bind TTY Shell
 The endpoint  `http[s]://<TARGET>/bind/<PORT>` binds a listening port on `<TARGET>:<PORT>` <br/>

