@@ -53,6 +53,8 @@ Doing so, it allows catching signal for a process you don't own:<br/>
 * Call `apachectl stop` to simulate the original behavior of the init script.
 * Exit our forked root apache2 process
 
+The path `/var/run/apache2/apache2.pid` is stored in the environment variable: `APACHE_PID_FILE` <br/>
+
 **If you have a better idea for init-like system, feel free to contact me (or PR) !** <br/>
 
 The apache2 server needs to be compiled with the mod_so to allow Dynamic Shared Object (DSO) support.
