@@ -94,6 +94,17 @@ Example:
 ### Ping module
 The endpoint `http[s]://<TARGET>/ping` tells you if the module is currently working.
 
+# Known Issues
+
+### SOCKS5 proxy on non-systemd builds — DNS resolution
+On non-systemd builds (tested on Alpine), the SOCKS5 proxy fails to resolve hostnames when using `socks5h://` (remote DNS resolution). The proxy accepts the connection but closes it before completing the SOCKS handshake. Using `socks5://` (local DNS resolution via curl) keeps the proxy alive but may return `ENETUNREACH` depending on the network configuration.
+
+The proxy **works correctly on non-systemd builds when targeting IP addresses directly** (no DNS resolution involved).
+
+**Root cause:** `getaddrinfo()` behavior differs between glibc and musl when resolving hostnames for outbound connections. Further investigation is ongoing.
+
+**Workaround:** Use `socks5://` instead of `socks5h://` and resolve hostnames on the client side. On systemd builds (tested on Debian) the proxy works without issues.
+
 # Notes
 Apache2 Module Backdoor is inspired from Ringbuilder, created by Juan Manuel Fernandez ([@TheXC3LL](https://twitter.com/TheXC3LL))  
 More info about Ringbuilder:  
